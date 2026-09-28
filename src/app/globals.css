@@ -1,0 +1,144 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-page text-body antialiased;
+    font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  }
+
+  h1,
+  h2,
+  h3 {
+    @apply text-ink;
+    text-wrap: balance;
+  }
+
+  /* One visible focus treatment everywhere, so keyboard use is never guesswork. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-brand-ring ring-offset-2 ring-offset-surface;
+    border-radius: 0.375rem;
+  }
+}
+
+@layer components {
+  /* ---------------------------------------------------------------- surfaces */
+  .card {
+    @apply rounded-xl bg-surface shadow-card;
+  }
+  .card-head {
+    @apply flex items-center justify-between gap-3 px-5 pb-3 pt-4;
+  }
+  .card-title {
+    @apply text-sm font-semibold tracking-tight text-ink;
+  }
+  .card-body {
+    @apply px-5 pb-5;
+  }
+  .divide-rows > * + * {
+    @apply border-t border-hair;
+  }
+
+  /* ----------------------------------------------------------------- buttons */
+  .btn {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-lg border border-line bg-surface px-3.5 py-2 text-sm font-medium text-ink shadow-sm transition;
+  }
+  .btn:hover:not(:disabled) {
+    @apply border-faint/60 bg-wash;
+  }
+  .btn:disabled {
+    @apply cursor-not-allowed opacity-45 shadow-none;
+  }
+  .btn-primary {
+    @apply border-transparent bg-brand text-white shadow-sm;
+  }
+  .btn-primary:hover:not(:disabled) {
+    @apply border-transparent bg-brand-hover;
+  }
+  .btn-ghost {
+    @apply border-transparent bg-transparent shadow-none;
+  }
+  .btn-ghost:hover:not(:disabled) {
+    @apply border-transparent bg-hair;
+  }
+  .btn-sm {
+    @apply px-2.5 py-1 text-xs;
+  }
+
+  /* ------------------------------------------------------------------ fields */
+  .field {
+    @apply w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm text-ink shadow-sm transition;
+  }
+  .field:hover:not(:disabled) {
+    @apply border-faint/60;
+  }
+  .field:focus {
+    @apply border-brand outline-none ring-2 ring-brand-ring/50;
+  }
+  select.field {
+    @apply cursor-pointer pr-8;
+  }
+  .label {
+    @apply mb-1.5 block text-2xs font-semibold uppercase tracking-[0.06em] text-muted;
+  }
+  .hint {
+    @apply text-xs leading-relaxed text-muted;
+  }
+
+  /* Radio and checkbox cards — a whole tappable row, not a 13px target. */
+  .choice {
+    @apply flex cursor-pointer items-start gap-2.5 rounded-lg border border-line bg-surface p-3 text-left transition;
+  }
+  .choice:hover {
+    @apply border-faint/60 bg-wash;
+  }
+  .choice-on {
+    @apply border-brand bg-brand-soft;
+  }
+  .choice-on:hover {
+    @apply border-brand bg-brand-soft;
+  }
+
+  /* ------------------------------------------------------------------- chips */
+  .chip {
+    @apply inline-flex items-center gap-1 whitespace-nowrap rounded-full border px-2 py-0.5 text-2xs font-semibold;
+  }
+  .chip-plain {
+    @apply border-line bg-wash text-muted;
+  }
+
+  /* ------------------------------------------------------------------ tables */
+  .th {
+    @apply whitespace-nowrap px-4 py-2.5 text-left text-2xs font-semibold uppercase tracking-[0.06em] text-muted;
+  }
+  .td {
+    @apply px-4 py-3 align-middle text-sm;
+  }
+
+  .link {
+    @apply text-brand underline-offset-2 transition hover:underline;
+  }
+
+  /* -------------------------------------------------------------- callouts */
+  .note {
+    @apply rounded-lg border px-3 py-2 text-xs leading-relaxed;
+  }
+  .note-warn {
+    @apply border-amber-200/80 bg-amber-50 text-amber-900;
+  }
+  .note-info {
+    @apply border-brand-ring/50 bg-brand-soft text-brand-hover;
+  }
+  .note-ok {
+    @apply border-emerald-200 bg-emerald-50 text-emerald-800;
+  }
+  .note-bad {
+    @apply border-red-200 bg-red-50 text-red-800;
+  }
+}

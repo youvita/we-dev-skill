@@ -1,0 +1,302 @@
+// Development Knowledge Sharing & Skill Management System
+// Levels are stored as Int 0..4 (L0 No Evidence .. L4 Advanced) so they can be
+// compared and aggregated; a NULL level means never assessed, which is not the
+// same as L0. Prisma does not support enums on SQLite, so the other closed sets
+// are Strings validated in src/lib/domain.ts.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Member {
+  id        String   @id @default(cuid())
+  name      String
+  email     String   @unique
+  title     String?
+  role      String   @default("MEMBER") // MEMBER | ADMIN
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  ownedSkills          Skill[]              @relation("SkillOwner")
+  memberSkills         MemberSkill[]
+  assessments          Assessment[]         @relation("AssessmentSubject")
+  reviewsGiven         Assessment[]         @relation("AssessmentReviewer")
+  evidence             Evidence[]           @relation("EvidenceSubject")
+  evidenceRecorded     Evidence[]           @relation("EvidenceRecorder")
+  checklistProgress    ChecklistProgress[]
+  learningAssignments  LearningAssignment[]
+  learningNotes        LearningNote[]
+  sessionsPresented    Session[]            @relation("SessionPresenter")
+  docsEdited           SkillDoc[]           @relation("SkillDocEditor")
+  sessionParticipation SessionParticipant[]
+}
+
+model Skill {
+  id          String   @id @default(cuid())
+  key         String   @unique // database, api, web, ios, android
+  name        String
+  description String   @default("")
+  ownerId     String?
+  order       Int      @default(0)
+  archived    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  owner               Member?              @relation("SkillOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  docs                SkillDoc[]
+  checklistItems      ChecklistItem[]
+  memberSkills        MemberSkill[]
+  assessments         Assessment[]
+  evidence            Evidence[]
+  sessions            Session[]
+  learningAssignments LearningAssignment[]
+  learningNotes       LearningNote[]
+}
+
+/// One row of a skill's Knowledge Checklist (spec §7).
+model ChecklistItem {
+  id            String   @id @default(cuid())
+  skillId       String
+  group         String   @default("General") // e.g. "Database Fundamentals"
+  topic         String
+  description   String   @default("")
+  requiredLevel Int      @default(1) // 1..4
+  order         Int      @default(0)
+  createdAt     DateTime @default(now())
+
+  skill    Skill               @relation(fields: [skillId], references: [id], onDelete: Cascade)
+  progress ChecklistProgress[]
+
+  @@index([skillId, order])
+}
+
+/// A member's status on one checklist item.
+model ChecklistProgress {
+  id          String   @id @default(cuid())
+  memberId    String
+  itemId      String
+  status      String   @default("NOT_STARTED") // NOT_STARTED | LEARNING | COMPLETED | NEEDS_REVIEW | VERIFIED
+  notes       String   @default("")
+  evidenceUrl String   @default("")
+  updatedAt   DateTime @updatedAt
+
+  member Member        @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  item   ChecklistItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@unique([memberId, itemId])
+}
+
+/// A member's standing in one skill. selfLevel/verifiedLevel are denormalised
+/// pointers to the latest Assessment of each type — the Assessment table is the
+/// source of truth and is never overwritten (spec §8).
+model MemberSkill {
+  id            String   @id @default(cuid())
+  memberId      String
+  skillId       String
+  isPrimary     Boolean  @default(false)
+  targetLevel   Int      @default(2)
+  selfLevel     Int? // latest SELF assessment
+  verifiedLevel Int? // latest VERIFICATION assessment — only a skill owner/admin can move this
+  createdAt     DateTime @default(now())
+
+  member Member @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  skill  Skill  @relation(fields: [skillId], references: [id], onDelete: Cascade)
+
+  @@unique([memberId, skillId])
+}
+
+/// Append-only assessment history (spec 1 §8, spec 2 "Assessment Result").
+/// type SELF is written by the member themselves; type VERIFICATION may only be
+/// written by the skill owner or an admin.
+model Assessment {
+  id         String   @id @default(cuid())
+  memberId   String
+  skillId    String
+  type       String // SELF | VERIFICATION
+  level      Int // 0..4
+  evidence   String   @default("") // self: the member's own explanation
+  comment    String   @default("") // reviewer comment
+  reviewerId String? // null for SELF
+  sessionId  String? // set when the assessment came out of a review session
+  createdAt  DateTime @default(now())
+
+  // Spec 2 record fields.
+  method              String? // OWNER_REVIEW | SESSION_REVIEW | PRACTICAL_TASK | PEER_REVIEW | SELF_ASSESSMENT
+  confidence          String? // LOW | MEDIUM | HIGH
+  weakAreas           String    @default("")
+  recommendedLearning String    @default("")
+  nextAssessmentDate  DateTime?
+
+  member        Member           @relation("AssessmentSubject", fields: [memberId], references: [id], onDelete: Cascade)
+  skill         Skill            @relation(fields: [skillId], references: [id], onDelete: Cascade)
+  reviewer      Member?          @relation("AssessmentReviewer", fields: [reviewerId], references: [id], onDelete: SetNull)
+  session       Session?         @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  dimensions    DimensionScore[]
+  aiChecks      AiCheck[]
+  evidenceItems Evidence[]       @relation("AssessmentEvidence")
+
+  @@index([memberId, skillId, createdAt])
+}
+
+/// Per-dimension score behind one assessment (spec 2, "Assessment Dimensions").
+/// A single overall number hides which part of the skill is missing.
+model DimensionScore {
+  id           String @id @default(cuid())
+  assessmentId String
+  dimension    String // KNOWLEDGE | IMPLEMENTATION | CODE_UNDERSTANDING | DEBUGGING | DESIGN | COMMUNICATION
+  level        Int // 0..4
+  note         String @default("")
+
+  assessment Assessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+
+  @@unique([assessmentId, dimension])
+}
+
+/// How independently the developer understands the solution (spec 2, "AI
+/// Dependency"). AI usage is not a negative factor; this records control.
+model AiCheck {
+  id           String @id @default(cuid())
+  assessmentId String
+  criterion    String // EXPLAIN_AI_CODE | MODIFY_AI_CODE | SPOT_WRONG_AI_CODE | DEBUG_WITHOUT_AI | DECIDE_WITHOUT_AI
+  rating       String @default("NOT_ASSESSED") // NOT_ASSESSED | NO | PARTIAL | YES
+  note         String @default("")
+
+  assessment Assessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+
+  @@unique([assessmentId, criterion])
+}
+
+/// A piece of evidence for a member in a skill. Evidence accumulates on its own
+/// (spec 2 flow: "... Assess → Record Evidence → Update Skill Level") and any
+/// number of assessments can cite the items that backed them.
+model Evidence {
+  id           String   @id @default(cuid())
+  memberId     String
+  skillId      String
+  type         String // see EVIDENCE_TYPES in src/lib/domain.ts
+  summary      String
+  detail       String   @default("")
+  url          String   @default("")
+  occurredAt   DateTime @default(now())
+  recordedById String?
+  sessionId    String?
+  createdAt    DateTime @default(now())
+
+  member     Member   @relation("EvidenceSubject", fields: [memberId], references: [id], onDelete: Cascade)
+  skill      Skill    @relation(fields: [skillId], references: [id], onDelete: Cascade)
+  recordedBy Member?  @relation("EvidenceRecorder", fields: [recordedById], references: [id], onDelete: SetNull)
+  session    Session? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+
+  // A piece of evidence can back more than one assessment: a standing project
+  // contribution is still valid at the next review.
+  assessments Assessment[] @relation("AssessmentEvidence")
+
+  @@index([memberId, skillId, occurredAt])
+}
+
+/// Learning assignment handed out after a concept session (spec §11).
+model LearningAssignment {
+  id          String    @id @default(cuid())
+  memberId    String
+  skillId     String
+  targetLevel Int       @default(2)
+  status      String    @default("ACTIVE") // ACTIVE | COMPLETED | CANCELLED
+  dueDate     DateTime?
+  note        String    @default("")
+  createdAt   DateTime  @default(now())
+
+  member Member @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  skill  Skill  @relation(fields: [skillId], references: [id], onDelete: Cascade)
+
+  @@unique([memberId, skillId])
+}
+
+/// A member's learning log: notes, links, code snippets, open questions (spec §11).
+model LearningNote {
+  id        String   @id @default(cuid())
+  memberId  String
+  skillId   String
+  kind      String   @default("NOTE") // NOTE | LINK | CODE | QUESTION
+  title     String
+  body      String   @default("")
+  url       String   @default("")
+  createdAt DateTime @default(now())
+
+  member Member @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  skill  Skill  @relation(fields: [skillId], references: [id], onDelete: Cascade)
+
+  @@index([memberId, skillId])
+}
+
+/// Knowledge sharing session (spec §9).
+model Session {
+  id          String   @id @default(cuid())
+  title       String
+  skillId     String
+  topic       String   @default("")
+  type        String // CONCEPT_SHARING | MEMBER_SHARING | PRACTICAL_CHALLENGE | REVIEW_ASSESSMENT
+  presenterId String?
+  date        DateTime
+  duration    Int      @default(60) // minutes
+  location    String   @default("")
+  description String   @default("")
+  status      String   @default("PLANNED") // PLANNED | COMPLETED | CANCELLED
+  createdAt   DateTime @default(now())
+
+  skill        Skill                @relation(fields: [skillId], references: [id], onDelete: Cascade)
+  presenter    Member?              @relation("SessionPresenter", fields: [presenterId], references: [id], onDelete: SetNull)
+  participants SessionParticipant[]
+  materials    SessionMaterial[]
+  assessments  Assessment[]
+  evidence     Evidence[]
+
+  @@index([date])
+}
+
+model SessionParticipant {
+  id        String  @id @default(cuid())
+  sessionId String
+  memberId  String
+  attended  Boolean @default(false)
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  member  Member  @relation(fields: [memberId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, memberId])
+}
+
+model SessionMaterial {
+  id        String @id @default(cuid())
+  sessionId String
+  label     String
+  url       String @default("")
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+}
+
+/// A written guide for a skill, in Markdown: the concepts the owner introduces in
+/// a Concept Sharing session, and the development standards the team works to.
+/// This is the knowledge itself — the matrix only measures it.
+model SkillDoc {
+  id          String   @id @default(cuid())
+  skillId     String
+  title       String
+  slug        String
+  summary     String   @default("")
+  body        String   @default("") // Markdown
+  kind        String   @default("CONCEPT") // CONCEPT | STANDARD | REFERENCE
+  order       Int      @default(0)
+  updatedById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  skill     Skill   @relation(fields: [skillId], references: [id], onDelete: Cascade)
+  updatedBy Member? @relation("SkillDocEditor", fields: [updatedById], references: [id], onDelete: SetNull)
+
+  @@unique([skillId, slug])
+  @@index([skillId, order])
+}
