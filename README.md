@@ -8,6 +8,14 @@ primary specialization**, while keeping deeper expertise in their primary skill.
 
 ## Running it
 
+The app uses Postgres. Put a connection string in `.env`:
+
+```bash
+DATABASE_URL="postgresql://user:password@host:5432/dbname?sslmode=require"
+```
+
+Then:
+
 ```bash
 npm install
 npm run setup   # prisma generate + db push + seed
@@ -20,10 +28,18 @@ Other scripts:
 
 | Script | What it does |
 | --- | --- |
-| `npm run setup` | Generate the client, create the SQLite file, seed the team |
-| `npm run db:reset` | Delete `prisma/dev.db` and start over from the seed |
+| `npm run setup` | Generate the client, create the tables, seed the team |
+| `npm run db:reset` | Drop all data and start over from the seed |
 | `npm run db:seed` | Re-run the seed against the existing database |
 | `npm run build` | Production build (also type-checks everything) |
+
+## Deploying to Vercel
+
+1. Add a Postgres database to the Vercel project (Storage → Neon, or any hosted
+   Postgres) and make sure `DATABASE_URL` is set for Production and Preview.
+2. Create the tables and seed once, from your machine, against that database:
+   `DATABASE_URL="<production url>" npm run setup`
+3. Redeploy.
 
 ## Signing in
 
@@ -325,10 +341,9 @@ src/
   stay separate rather than merging into one Mobile skill — they have different
   checklists and different owners. The five seeded skills are Database, Backend,
   Web, iOS and Android. Admins can rename or add skills in the UI.
-- SQLite is used for a frictionless local start. Moving to Postgres is a change to
-  the `datasource` block plus `DATABASE_URL`; nothing in the app code assumes SQLite.
-  Note that Prisma enums are unavailable on SQLite, which is why closed sets are
-  `String` columns validated in `src/lib/domain.ts`.
+- The database is Postgres (originally SQLite, which cannot run on Vercel's
+  read-only serverless filesystem). Closed sets are still `String` columns
+  validated in `src/lib/domain.ts`, a holdover from SQLite having no enums.
 - `prisma db push` is used rather than migrations, so the schema can move freely
   while the model is still settling. Switch to `prisma migrate` before the first
   real deployment.

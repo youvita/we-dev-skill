@@ -1,15 +1,15 @@
 // Development Knowledge Sharing & Skill Management System
 // Levels are stored as Int 0..4 (L0 No Evidence .. L4 Advanced) so they can be
 // compared and aggregated; a NULL level means never assessed, which is not the
-// same as L0. Prisma does not support enums on SQLite, so the other closed sets
-// are Strings validated in src/lib/domain.ts.
+// same as L0. The other closed sets are Strings validated in src/lib/domain.ts
+// (a holdover from SQLite, which has no enums).
 
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
