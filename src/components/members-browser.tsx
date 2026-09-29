@@ -217,7 +217,7 @@ export function MembersBrowser({
               </div>
             </div>
             <p className="hint">
-              They start tracking every skill with a default target of L2 in each.
+              They start tracking every skill with a default target of C in each.
             </p>
             <SubmitButton>Add member</SubmitButton>
           </ActionForm>

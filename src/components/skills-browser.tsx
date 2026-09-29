@@ -180,7 +180,7 @@ export function SkillsBrowser({
               <textarea id="skill-description" name="description" rows={2} className="field" />
             </div>
             <p className="hint">
-              Every active member gets a row in the new skill with a default target of L2.
+              Every active member gets a row in the new skill with a default target of C.
             </p>
             <SubmitButton>Add skill</SubmitButton>
           </ActionForm>

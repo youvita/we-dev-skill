@@ -9,6 +9,8 @@ import {
   CONFIDENCE_HINT,
   CONFIDENCE_LABEL,
   CONFIDENCE_LEVELS,
+  DIFFICULTIES,
+  DIFFICULTY_DEF,
   DIMENSIONS,
   DIMENSION_DEF,
   EVIDENCE_TYPES,
@@ -16,6 +18,7 @@ import {
   LEARNING_CYCLE,
   LEVELS,
   LEVEL_DEF,
+  MIN_QUESTIONS_ASKED,
   SESSION_TYPES,
   SESSION_TYPE_HINT,
   SESSION_TYPE_LABEL,
@@ -32,17 +35,63 @@ export default function LevelsPage() {
     <>
       <PageHeader
         title="Level guide"
-        subtitle="The single definition of every level, dimension and evidence type the programme uses. Everything else in the app links here rather than repeating it."
+        subtitle="The single definition of every grade, dimension and evidence type the programme uses. Everything else in the app links here rather than repeating it."
       />
+
+      {/* ------------------------------------------------------- the scoring */}
+      <Card title="How a grade is scored" className="mb-6">
+        <div className="card-body grid gap-5 md:grid-cols-2">
+          <div>
+            <p className="hint mb-3">
+              Each skill has a prepared Q&amp;A (the Q&amp;A tab on the skill). In a review the
+              skill owner asks the questions and marks every answer Correct (full points), Partial
+              (half) or Wrong (none). Harder questions carry more weight:
+            </p>
+            <ul className="space-y-1 text-xs text-muted">
+              {DIFFICULTIES.map((d) => (
+                <li key={d}>
+                  <span className="font-medium text-ink">{DIFFICULTY_DEF[d].label}</span> —{' '}
+                  {DIFFICULTY_DEF[d].weight} point{DIFFICULTY_DEF[d].weight === 1 ? '' : 's'}
+                </li>
+              ))}
+            </ul>
+            <p className="hint mt-3">
+              Score = points earned ÷ points possible over the questions asked (at least{' '}
+              {MIN_QUESTIONS_ASKED}). The score sets the verified grade.
+            </p>
+          </div>
+          <table className="w-full self-start text-sm">
+            <thead>
+              <tr className="border-y border-hair bg-wash">
+                <th className="th">Score</th>
+                <th className="th">Grade</th>
+              </tr>
+            </thead>
+            <tbody className="divide-rows">
+              {[...LEVELS].reverse().map((l) => (
+                <tr key={l}>
+                  <td className="td tabular-nums">{LEVEL_DEF[l].band}</td>
+                  <td className="td">
+                    <LevelBadge level={l} withName />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
 
       {/* --------------------------------------------------------- the ladder */}
       <section className="mb-8">
         <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
-          {LEVELS.map((l) => (
+          {[...LEVELS].reverse().map((l) => (
             <article key={l} className="card p-5">
               <header className="mb-2.5 flex items-center gap-2.5">
                 <LevelBadge level={l} />
                 <h2 className="text-base font-semibold text-ink">{LEVEL_DEF[l].name}</h2>
+                <span className="ml-auto text-xs tabular-nums text-muted">
+                  score {LEVEL_DEF[l].band}
+                </span>
               </header>
               <p className="mb-3 text-sm leading-relaxed text-muted">{LEVEL_DEF[l].summary}</p>
               <p className="label">Can</p>
@@ -56,9 +105,8 @@ export default function LevelsPage() {
         </div>
 
         <p className="note note-info mt-4">
-          <strong>A dash is not L0.</strong> A dash means the skill has never been assessed. L0
-          means someone was assessed and had not yet demonstrated the skill. The app shows them
-          differently on purpose.
+          <strong>A dash is not E.</strong> A dash means the skill has never been assessed. E means
+          someone was assessed and scored below 60. The app shows them differently on purpose.
         </p>
       </section>
 
@@ -129,8 +177,8 @@ export default function LevelsPage() {
               ))}
             </ul>
             <p className="note note-info mt-3">
-              Do not use a single quiz score to settle a level. Use multiple forms of evidence
-              whenever possible.
+              The Q&amp;A sets the grade and is recorded as Knowledge questions evidence. Cite other
+              forms of evidence alongside it to raise the confidence in that grade.
             </p>
           </div>
         </Card>
@@ -138,7 +186,7 @@ export default function LevelsPage() {
         <Card title="Confidence">
           <div className="card-body">
             <p className="hint mb-3">
-              How well-evidenced a verified level is. Confidence is capped by the evidence actually
+              How well-evidenced a verified grade is. Confidence is capped by the evidence actually
               cited: picking High with one item on file records what the evidence supports instead.
             </p>
             <dl className="space-y-2">

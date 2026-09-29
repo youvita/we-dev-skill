@@ -1,8 +1,14 @@
 // Closed sets and rules from the two product specs. Kept in one place because
-// SQLite has no enums — everything that writes these values validates here.
+// the schema stores them as plain strings — everything that writes these
+// values validates here.
 
 /* ----------------------------------------------------------------- levels */
 
+/**
+ * Grades E (lowest) to A (highest), stored as Int 0..4 so they can be compared
+ * and aggregated: 0 = E, 1 = D, 2 = C, 3 = B, 4 = A. A NULL level means never
+ * assessed. A verified grade comes from the Q&A score (see levelForScore).
+ */
 export const LEVELS = [0, 1, 2, 3, 4] as const;
 export type Level = (typeof LEVELS)[number];
 
@@ -11,16 +17,18 @@ export const ASSIGNABLE_LEVELS = LEVELS;
 
 export const LEVEL_DEF: Record<
   Level,
-  { code: string; name: string; summary: string; can: string[] }
+  { code: string; name: string; summary: string; can: string[]; minScore: number; band: string }
 > = {
   0: {
-    code: 'L0',
-    name: 'No Evidence',
-    summary: 'Has not yet demonstrated the skill.',
-    can: ['Nothing has been demonstrated or evidenced yet'],
+    code: 'E',
+    name: 'Beginner',
+    summary: 'Knows some basic concepts but cannot yet work in the area without close guidance.',
+    can: ['Recognise the main terms and tools', 'Follow a worked example step by step'],
+    minScore: 0,
+    band: 'below 60',
   },
   1: {
-    code: 'L1',
+    code: 'D',
     name: 'Fundamental',
     summary: 'Understands basic concepts and can perform simple tasks with guidance.',
     can: [
@@ -28,9 +36,11 @@ export const LEVEL_DEF: Record<
       'Describe the basic architecture and terminology',
       'Perform simple tasks with guidance',
     ],
+    minScore: 60,
+    band: '60–69',
   },
   2: {
-    code: 'L2',
+    code: 'C',
     name: 'Working',
     summary: 'Can independently perform common tasks and explain the implementation.',
     can: [
@@ -39,9 +49,11 @@ export const LEVEL_DEF: Record<
       'Explain their own implementation',
       'Integrate with another layer',
     ],
+    minScore: 70,
+    band: '70–79',
   },
   3: {
-    code: 'L3',
+    code: 'B',
     name: 'Proficient',
     summary: 'Can design solutions, troubleshoot, review code and decide independently.',
     can: [
@@ -50,9 +62,11 @@ export const LEVEL_DEF: Record<
       'Review other people’s code',
       'Make technical decisions independently',
     ],
+    minScore: 80,
+    band: '80–89',
   },
   4: {
-    code: 'L4',
+    code: 'A',
     name: 'Advanced',
     summary: 'Handles complex problems, optimises, defines standards and mentors.',
     can: [
@@ -62,13 +76,12 @@ export const LEVEL_DEF: Record<
       'Mentor other developers',
       'Own the skill area',
     ],
+    minScore: 90,
+    band: '90–100',
   },
 };
 
-/**
- * `null` means never assessed; level 0 means assessed and nothing was
- * demonstrated. The two are deliberately different.
- */
+/** `null` means never assessed. */
 export function levelCode(level: number | null | undefined): string {
   if (level === null || level === undefined) return '–';
   return LEVEL_DEF[level as Level]?.code ?? '–';
@@ -76,6 +89,59 @@ export function levelCode(level: number | null | undefined): string {
 
 export function isLevel(v: unknown): v is Level {
   return typeof v === 'number' && v >= 0 && v <= 4 && Number.isInteger(v);
+}
+
+/** The grade a Q&A score (0..100) earns. Anything under 60 is E. */
+export function levelForScore(score: number): Level {
+  for (const l of [...LEVELS].reverse()) {
+    if (score >= LEVEL_DEF[l].minScore) return l;
+  }
+  return 0;
+}
+
+/* -------------------------------------------------------------- Q&A score */
+
+export const DIFFICULTIES = ['BASIC', 'INTERMEDIATE', 'ADVANCED'] as const;
+export type Difficulty = (typeof DIFFICULTIES)[number];
+
+/** Harder questions count for more of the score. */
+export const DIFFICULTY_DEF: Record<Difficulty, { label: string; weight: number }> = {
+  BASIC: { label: 'Basic', weight: 1 },
+  INTERMEDIATE: { label: 'Intermediate', weight: 2 },
+  ADVANCED: { label: 'Advanced', weight: 3 },
+};
+
+export function difficultyWeight(d: string): number {
+  return DIFFICULTY_DEF[d as Difficulty]?.weight ?? 1;
+}
+
+/** NOT_ASKED questions are left out of the score entirely. */
+export const ANSWER_RESULTS = ['NOT_ASKED', 'CORRECT', 'PARTIAL', 'WRONG'] as const;
+export type AnswerResult = (typeof ANSWER_RESULTS)[number];
+
+export const ANSWER_RESULT_DEF: Record<AnswerResult, { label: string; credit: number }> = {
+  NOT_ASKED: { label: 'Not asked', credit: 0 },
+  CORRECT: { label: 'Correct', credit: 1 },
+  PARTIAL: { label: 'Partial', credit: 0.5 },
+  WRONG: { label: 'Wrong', credit: 0 },
+};
+
+/** Fewer answers than this and the score says too little to set a grade. */
+export const MIN_QUESTIONS_ASKED = 5;
+
+/**
+ * Weighted Q&A score, 0..100 rounded to one decimal, over the questions that
+ * were actually asked. Returns null when nothing was asked.
+ */
+export function qaScore(answers: { weight: number; result: string }[]): number | null {
+  const asked = answers.filter((a) => a.result !== 'NOT_ASKED');
+  const max = asked.reduce((sum, a) => sum + a.weight, 0);
+  if (max === 0) return null;
+  const earned = asked.reduce(
+    (sum, a) => sum + a.weight * (ANSWER_RESULT_DEF[a.result as AnswerResult]?.credit ?? 0),
+    0,
+  );
+  return Math.round((earned / max) * 1000) / 10;
 }
 
 /* ------------------------------------------------------- assessment types */
@@ -186,34 +252,31 @@ export const EVIDENCE_TYPE_LABEL: Record<EvidenceType, string> = {
 export const WEAK_ALONE_EVIDENCE: EvidenceType[] = ['KNOWLEDGE_QUESTIONS', 'AI_ASSESSMENT'];
 
 /**
- * Spec 2, "Important Rule": do not use a single quiz score to determine a
- * developer's complete skill level. Returns the warnings that apply to a set of
- * evidence backing one assessment, or an empty array when the evidence is sound.
+ * The Q&A score sets the grade; the evidence cited alongside it decides how far
+ * that grade can be trusted. The Q&A is recorded as Knowledge questions
+ * evidence automatically, so `types` should include it. Returns the warnings
+ * that apply, or an empty array when the evidence is sound.
  */
 export function evidenceWarnings(types: EvidenceType[], level: number): string[] {
   const out: string[] = [];
   const distinct = [...new Set(types)];
 
-  // Level 0 means nothing was demonstrated, so it needs no supporting evidence.
-  if (level === 0) return out;
-
   if (distinct.length === 0) {
-    out.push('No evidence is attached. A skill level should be supported by evidence.');
+    out.push('No evidence is attached. A grade should be supported by evidence.');
     return out;
   }
-  if (distinct.length === 1) {
+  if (distinct.every((t) => WEAK_ALONE_EVIDENCE.includes(t))) {
+    out.push(
+      'The grade rests on the Q&A alone. Cite a practical task, code review or project work as well to raise confidence.',
+    );
+  } else if (distinct.length === 1) {
     out.push(
       `Only one form of evidence (${EVIDENCE_TYPE_LABEL[distinct[0]]}). Use multiple forms whenever possible.`,
     );
   }
-  if (distinct.every((t) => WEAK_ALONE_EVIDENCE.includes(t))) {
-    out.push(
-      'All the evidence is recall- or AI-based. A level should not rest on a quiz score or an AI assessment alone.',
-    );
-  }
   if (level >= 3 && !distinct.some((t) => t === 'DEBUGGING_TASK' || t === 'PRACTICAL_TASK')) {
     out.push(
-      'L3 and above claim independent troubleshooting. Consider a debugging or practical task as evidence.',
+      'B and above claim independent troubleshooting. Consider a debugging or practical task as evidence.',
     );
   }
   return out;
@@ -221,7 +284,7 @@ export function evidenceWarnings(types: EvidenceType[], level: number): string[]
 
 /** The confidence the evidence actually supports, used to flag optimistic input. */
 export function suggestedConfidence(types: EvidenceType[], level: number): Confidence {
-  if (level === 0) return 'HIGH';
+  void level;
   const distinct = [...new Set(types)];
   if (distinct.length === 0) return 'LOW';
   if (distinct.length === 1 || distinct.every((t) => WEAK_ALONE_EVIDENCE.includes(t))) return 'LOW';

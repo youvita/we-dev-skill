@@ -2,6 +2,8 @@ import Link from 'next/link';
 import {
   AI_CRITERION_LABEL,
   AI_RATING_LABEL,
+  ANSWER_RESULT_DEF,
+  DIFFICULTY_DEF,
   ASSESSMENT_METHOD_LABEL,
   CONFIDENCE_LABEL,
   DIMENSIONS,
@@ -13,7 +15,9 @@ import {
   levelCode,
   type AiCriterion,
   type AiRating,
+  type AnswerResult,
   type AssessmentMethod,
+  type Difficulty,
   type Confidence,
   type Dimension,
   type EvidenceType,
@@ -203,6 +207,7 @@ export type AssessmentRecord = {
   id: string;
   type: string;
   level: number;
+  score: number | null;
   evidence: string;
   comment: string;
   method: string | null;
@@ -215,8 +220,39 @@ export type AssessmentRecord = {
   session: { id: string; title: string } | null;
   dimensions: { dimension: string; level: number; note: string }[];
   aiChecks: { criterion: string; rating: string }[];
+  answers: { id: string; topic: string; prompt: string; difficulty: string; weight: number; result: string; note: string }[];
   evidenceItems: EvidenceItem[];
 };
+
+const ANSWER_STYLE: Record<string, string> = {
+  CORRECT: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+  PARTIAL: 'border-amber-200 bg-amber-50 text-amber-800',
+  WRONG: 'border-rose-200 bg-rose-50 text-rose-700',
+};
+
+/** The Q&A behind a verified grade: every question asked and how it went. */
+export function QaAnswers({ answers }: { answers: AssessmentRecord['answers'] }) {
+  return (
+    <ul className="space-y-1">
+      {answers.map((q) => (
+        <li key={q.id} className="flex items-start gap-2 text-xs">
+          <span className={`chip shrink-0 ${ANSWER_STYLE[q.result] ?? 'chip-plain'}`}>
+            {ANSWER_RESULT_DEF[q.result as AnswerResult]?.label ?? q.result}
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="text-ink">{q.prompt}</span>
+            <span className="text-faint">
+              {' '}
+              · {q.topic} · {DIFFICULTY_DEF[q.difficulty as Difficulty]?.label ?? q.difficulty}{' '}
+              {q.weight}pt
+            </span>
+            {q.note && <span className="block text-muted">{q.note}</span>}
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+}
 
 /** One full entry in the assessment history. */
 export function AssessmentEntry({ a, skillName }: { a: AssessmentRecord; skillName?: string }) {
@@ -233,16 +269,32 @@ export function AssessmentEntry({ a, skillName }: { a: AssessmentRecord; skillNa
               : 'border-sky-200 bg-sky-50 text-sky-700'
           }`}
         >
-          {isVerification ? 'Verified level' : 'Self assessment'}
+          {isVerification ? 'Verified grade' : 'Self assessment'}
         </span>
         {skillName && <span className="text-sm font-medium">{skillName}</span>}
         <LevelBadge level={a.level} />
         <span className="text-xs text-muted">{LEVEL_DEF[a.level as Level]?.name}</span>
+        {a.score !== null && (
+          <span className="chip chip-plain tabular-nums" title="Weighted Q&A score">
+            Q&amp;A {a.score}%
+          </span>
+        )}
         {isVerification && <ConfidenceChip confidence={a.confidence} />}
         <span className="ml-auto text-xs text-muted">{formatDate(a.createdAt)}</span>
       </div>
 
       {body && <p className="mt-1.5 whitespace-pre-line text-xs text-muted">{body}</p>}
+
+      {a.answers.length > 0 && (
+        <details className="mt-2.5 rounded-md border border-line bg-wash p-2.5">
+          <summary className="label mb-0 cursor-pointer">
+            Q&amp;A — {a.answers.length} questions
+          </summary>
+          <div className="mt-2">
+            <QaAnswers answers={a.answers} />
+          </div>
+        </details>
+      )}
 
       {a.dimensions.length > 0 && (
         <div className="mt-2.5 rounded-md border border-line bg-wash p-2.5">
@@ -318,6 +370,7 @@ export const assessmentSelect = {
   id: true,
   type: true,
   level: true,
+  score: true,
   evidence: true,
   comment: true,
   method: true,
@@ -330,6 +383,18 @@ export const assessmentSelect = {
   session: { select: { id: true, title: true } },
   dimensions: { select: { dimension: true, level: true, note: true } },
   aiChecks: { select: { criterion: true, rating: true } },
+  answers: {
+    orderBy: { id: 'asc' },
+    select: {
+      id: true,
+      topic: true,
+      prompt: true,
+      difficulty: true,
+      weight: true,
+      result: true,
+      note: true,
+    },
+  },
   evidenceItems: {
     select: {
       id: true,

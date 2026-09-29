@@ -3,6 +3,8 @@ import { notFound } from 'next/navigation';
 import { prisma } from '@/lib/db';
 import { requireActingUser } from '@/lib/session';
 import {
+  DIFFICULTIES,
+  DIFFICULTY_DEF,
   DOC_KINDS,
   DOC_KIND_HINT,
   DOC_KIND_LABEL,
@@ -10,6 +12,7 @@ import {
   LEVEL_DEF,
   SESSION_TYPE_LABEL,
   levelCode,
+  type Difficulty,
   type DocKind,
   type Level,
   type SessionType,
@@ -26,8 +29,11 @@ import {
   relativeDate,
 } from '@/components/ui';
 import { ActionForm, Disclosure, SubmitButton } from '@/components/forms';
+import { Markdown } from '@/components/markdown';
 import {
   addChecklistItem,
+  addQuestion,
+  removeQuestion,
   createSkillDoc,
   deleteChecklistItem,
   setSkillOwner,
@@ -35,7 +41,7 @@ import {
 } from '@/lib/actions';
 
 const DONE = ['COMPLETED', 'VERIFIED'];
-const TAB_KEYS = ['guides', 'checklist', 'team', 'sessions'] as const;
+const TAB_KEYS = ['guides', 'checklist', 'qa', 'team', 'sessions'] as const;
 type TabKey = (typeof TAB_KEYS)[number];
 
 export default async function SkillPage({
@@ -59,6 +65,7 @@ export default async function SkillPage({
       ownerId: true,
       owner: { select: { id: true, name: true, title: true } },
       checklistItems: { orderBy: { order: 'asc' } },
+      questions: { where: { archived: false }, orderBy: { order: 'asc' } },
       docs: {
         orderBy: { order: 'asc' },
         select: {
@@ -141,6 +148,14 @@ export default async function SkillPage({
     {},
   );
 
+  const questionTopics = skill.questions.reduce<Record<string, typeof skill.questions>>(
+    (acc, q) => {
+      (acc[q.topic] ??= []).push(q);
+      return acc;
+    },
+    {},
+  );
+
   const tab: TabKey = (TAB_KEYS as readonly string[]).includes(rawTab ?? '')
     ? (rawTab as TabKey)
     : 'guides';
@@ -166,6 +181,7 @@ export default async function SkillPage({
             </span>
             <span className="chip chip-plain">{skill.docs.length} guides</span>
             <span className="chip chip-plain">{skill.checklistItems.length} checklist items</span>
+            <span className="chip chip-plain">{skill.questions.length} Q&amp;A questions</span>
             <span className="chip chip-plain">{sessions.length} sessions</span>
           </>
         }
@@ -186,6 +202,7 @@ export default async function SkillPage({
             label: 'Checklist',
             count: skill.checklistItems.length,
           },
+          { key: 'qa', href: `${base}?tab=qa`, label: 'Q&A', count: skill.questions.length },
           { key: 'team', href: `${base}?tab=team`, label: 'Team', count: links.length },
           { key: 'sessions', href: `${base}?tab=sessions`, label: 'Sessions', count: sessions.length },
         ]}
@@ -474,6 +491,162 @@ export default async function SkillPage({
               }
             >
               <LevelLegend compact />
+            </Card>
+          </aside>
+        </div>
+      )}
+
+      {/* -------------------------------------------------------------- Q&A */}
+      {tab === 'qa' && (
+        <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_20rem]">
+          <Card title="Preparation Q&A">
+            {skill.questions.length === 0 ? (
+              <Empty>
+                No questions yet. The verified grade in {skill.name} is worked out from these, so an
+                assessment cannot be recorded until some are added.
+              </Empty>
+            ) : (
+              <div>
+                {Object.entries(questionTopics).map(([topic, qs]) => (
+                  <div key={topic} className="border-t border-hair first:border-t-0">
+                    <h3 className="bg-wash px-5 py-2 text-2xs font-semibold uppercase tracking-[0.06em] text-muted">
+                      {topic} · {qs.length}
+                    </h3>
+                    <ol className="divide-rows">
+                      {qs.map((q) => {
+                        const d = DIFFICULTY_DEF[q.difficulty as Difficulty];
+                        return (
+                          <li key={q.id} className="px-5 py-3">
+                            <div className="flex items-start gap-3">
+                              <p className="min-w-0 flex-1 text-sm font-medium text-ink">
+                                {q.prompt}
+                              </p>
+                              <span className="chip chip-plain shrink-0">
+                                {d?.label ?? q.difficulty} · {d?.weight ?? 1}pt
+                              </span>
+                              {canEdit && (
+                                <form action={removeQuestion}>
+                                  <input type="hidden" name="id" value={q.id} />
+                                  <button
+                                    type="submit"
+                                    className="text-xs text-faint transition hover:text-rose-600"
+                                    title="Remove this question"
+                                    aria-label={`Remove question: ${q.prompt}`}
+                                  >
+                                    &times;
+                                  </button>
+                                </form>
+                              )}
+                            </div>
+                            {q.expectedAnswer && (
+                              <details className="mt-2 rounded-md bg-wash px-3 py-2 text-xs">
+                                <summary className="cursor-pointer font-medium text-muted">
+                                  Expected answer
+                                </summary>
+                                <div className="mt-2">
+                                  <Markdown>{q.expectedAnswer}</Markdown>
+                                </div>
+                              </details>
+                            )}
+                          </li>
+                        );
+                      })}
+                    </ol>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {canEdit && (
+              <div className="border-t border-hair">
+                <Disclosure summary="Add a question">
+                  <ActionForm action={addQuestion} className="space-y-3.5" resetOnSuccess>
+                    <input type="hidden" name="skillId" value={skill.id} />
+                    <div>
+                      <label className="label" htmlFor="q-prompt">
+                        Question
+                      </label>
+                      <input id="q-prompt" name="prompt" className="field" required />
+                    </div>
+                    <div className="grid gap-3.5 sm:grid-cols-2">
+                      <div>
+                        <label className="label" htmlFor="q-topic">
+                          Topic
+                        </label>
+                        <input
+                          id="q-topic"
+                          name="topic"
+                          className="field"
+                          list="existing-q-topics"
+                          placeholder="General"
+                        />
+                        <datalist id="existing-q-topics">
+                          {Object.keys(questionTopics).map((t) => (
+                            <option key={t} value={t} />
+                          ))}
+                        </datalist>
+                      </div>
+                      <div>
+                        <label className="label" htmlFor="q-difficulty">
+                          Difficulty
+                        </label>
+                        <select
+                          id="q-difficulty"
+                          name="difficulty"
+                          className="field"
+                          defaultValue="BASIC"
+                        >
+                          {DIFFICULTIES.map((d) => (
+                            <option key={d} value={d}>
+                              {DIFFICULTY_DEF[d].label} ({DIFFICULTY_DEF[d].weight}pt)
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                    <div>
+                      <label className="label" htmlFor="q-answer">
+                        Expected answer (Markdown)
+                      </label>
+                      <textarea id="q-answer" name="expectedAnswer" rows={4} className="field" />
+                    </div>
+                    <SubmitButton>Add question</SubmitButton>
+                  </ActionForm>
+                </Disclosure>
+              </div>
+            )}
+          </Card>
+
+          <aside className="space-y-5">
+            <Card title="How the score works" padded>
+              <p className="hint mb-3">
+                In a review the owner asks these questions and marks each answer Correct (full
+                points), Partial (half) or Wrong (none). Harder questions are worth more:
+              </p>
+              <ul className="mb-3 space-y-1 text-xs text-muted">
+                {DIFFICULTIES.map((d) => (
+                  <li key={d}>
+                    <span className="font-medium text-ink">{DIFFICULTY_DEF[d].label}</span> —{' '}
+                    {DIFFICULTY_DEF[d].weight} point{DIFFICULTY_DEF[d].weight === 1 ? '' : 's'}
+                  </li>
+                ))}
+              </ul>
+              <p className="hint mb-2">The score is points earned ÷ points possible:</p>
+              <ul className="space-y-1.5">
+                {[...LEVELS].reverse().map((l) => (
+                  <li key={l} className="flex items-center gap-2 text-xs text-muted">
+                    <LevelBadge level={l} />
+                    <span className="w-14 tabular-nums">{LEVEL_DEF[l as Level].band}</span>
+                    {LEVEL_DEF[l as Level].name}
+                  </li>
+                ))}
+              </ul>
+            </Card>
+            <Card padded>
+              <p className="hint">
+                These questions are open on purpose: prepare with them. The review checks that you
+                can explain the answer in your own words, not recite it.
+              </p>
             </Card>
           </aside>
         </div>

@@ -135,8 +135,7 @@ export function LevelBadge({
   title?: string;
   withName?: boolean;
 }) {
-  // A null level has never been assessed; level 0 has been assessed and nothing
-  // was demonstrated. They are deliberately shown differently.
+  // A null level has never been assessed, which is not the same as grade E.
   if (level === null || level === undefined) {
     return (
       <span className="chip border-dashed border-line text-faint" title={title ?? 'Never assessed'}>
@@ -150,7 +149,7 @@ export function LevelBadge({
       className={`chip ${LEVEL_STYLE[level] ?? LEVEL_STYLE[1]} ${
         primary ? 'ring-1 ring-violet-300 ring-offset-1' : ''
       }`}
-      title={title ?? `${def.code} — ${def.name}: ${def.summary}`}
+      title={title ?? `${def.code} (${def.band}) — ${def.name}: ${def.summary}`}
     >
       {def.code}
       {withName && <span className="font-medium opacity-80">{def.name}</span>}

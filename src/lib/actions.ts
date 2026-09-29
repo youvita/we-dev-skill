@@ -8,22 +8,30 @@ import { ACTING_COOKIE, requireActingUser } from './session';
 import {
   AI_CRITERIA,
   AI_RATINGS,
+  ANSWER_RESULTS,
   ASSESSMENT_METHODS,
   CHECKLIST_STATUSES,
   CONFIDENCE_LEVELS,
+  DIFFICULTIES,
   DIMENSIONS,
   DOC_KINDS,
+  LEVEL_DEF,
+  MIN_QUESTIONS_ASKED,
   EVIDENCE_TYPES,
   NOTE_KINDS,
   OWNER_ONLY_CHECKLIST_STATUSES,
   SESSION_STATUSES,
   SESSION_TYPES,
+  difficultyWeight,
   isLevel,
+  levelForScore,
+  qaScore,
   slugify,
   suggestedConfidence,
   verifyDenialReason,
   type AiCriterion,
   type AiRating,
+  type AnswerResult,
   type ChecklistStatus,
   type Dimension,
   type EvidenceType,
@@ -73,7 +81,7 @@ export async function submitSelfAssessment(
   const level = num(formData, 'level');
   const evidence = str(formData, 'evidence');
 
-  if (!isLevel(level)) return { ok: false, error: 'Pick a level between L0 and L4.' };
+  if (!isLevel(level)) return { ok: false, error: 'Pick a grade between E and A.' };
   if (memberId !== actor.id && actor.role !== 'ADMIN') {
     return { ok: false, error: 'You can only record a self assessment for yourself.' };
   }
@@ -130,13 +138,20 @@ export async function submitVerification(
   const actor = await requireActingUser();
   const memberId = str(formData, 'memberId');
   const skillId = str(formData, 'skillId');
-  const level = num(formData, 'level');
   const comment = str(formData, 'comment');
   const sessionId = str(formData, 'sessionId') || null;
 
-  if (!isLevel(level)) return { ok: false, error: 'Pick a level between L0 and L4.' };
-
-  const skill = await prisma.skill.findUnique({ where: { id: skillId }, select: { ownerId: true } });
+  const skill = await prisma.skill.findUnique({
+    where: { id: skillId },
+    select: {
+      ownerId: true,
+      name: true,
+      questions: {
+        where: { archived: false },
+        select: { id: true, topic: true, prompt: true, difficulty: true },
+      },
+    },
+  });
   if (!skill) return { ok: false, error: 'Unknown skill.' };
 
   const denial = verifyDenialReason({
@@ -151,6 +166,42 @@ export async function submitVerification(
     where: { memberId_skillId: { memberId, skillId } },
   });
   if (!link) return { ok: false, error: 'This member is not tracking that skill yet.' };
+
+  // The grade comes from the weighted Q&A score, worked out here rather than
+  // trusted from the browser.
+  const answers: {
+    questionId: string;
+    topic: string;
+    prompt: string;
+    difficulty: string;
+    weight: number;
+    result: AnswerResult;
+    note: string;
+  }[] = [];
+  for (const q of skill.questions) {
+    const result = str(formData, `q_${q.id}`) || 'NOT_ASKED';
+    if (!ANSWER_RESULTS.includes(result as never)) {
+      return { ok: false, error: 'Invalid answer result.' };
+    }
+    if (result === 'NOT_ASKED') continue;
+    answers.push({
+      questionId: q.id,
+      topic: q.topic,
+      prompt: q.prompt,
+      difficulty: q.difficulty,
+      weight: difficultyWeight(q.difficulty),
+      result: result as AnswerResult,
+      note: str(formData, `qnote_${q.id}`),
+    });
+  }
+  if (answers.length < MIN_QUESTIONS_ASKED) {
+    return {
+      ok: false,
+      error: `Score at least ${MIN_QUESTIONS_ASKED} questions — ${answers.length} scored so far.`,
+    };
+  }
+  const score = qaScore(answers)!;
+  const level = levelForScore(score);
 
   const method = str(formData, 'method');
   if (method && !ASSESSMENT_METHODS.includes(method as never)) {
@@ -192,10 +243,12 @@ export async function submitVerification(
     return { ok: false, error: 'Some of the selected evidence does not belong to this member and skill.' };
   }
 
-  // Spec 2, "Important Rule": a level should not rest on one quiz score. The
-  // assessor may still proceed, but the recorded confidence is capped at what
-  // the evidence actually supports.
-  const supported = suggestedConfidence(cited.map((e) => e.type as EvidenceType), level);
+  // The Q&A sets the grade, but a grade that rests on the Q&A alone is recorded
+  // with low confidence: the confidence is capped at what the evidence supports.
+  const supported = suggestedConfidence(
+    ['KNOWLEDGE_QUESTIONS', ...cited.map((e) => e.type as EvidenceType)],
+    level,
+  );
   const order = { LOW: 0, MEDIUM: 1, HIGH: 2 } as const;
   const finalConfidence =
     confidence && order[confidence as keyof typeof order] <= order[supported]
@@ -209,12 +262,26 @@ export async function submitVerification(
   }
 
   const assessment = await prisma.$transaction(async (tx) => {
+    // The Q&A itself is evidence, so it goes on file like any other.
+    const qaEvidence = await tx.evidence.create({
+      data: {
+        memberId,
+        skillId,
+        type: 'KNOWLEDGE_QUESTIONS',
+        summary: `Q&A: scored ${score}% on ${answers.length} ${skill.name} questions`,
+        recordedById: actor.id,
+        sessionId,
+      },
+      select: { id: true },
+    });
+
     const created = await tx.assessment.create({
       data: {
         memberId,
         skillId,
         type: 'VERIFICATION',
         level,
+        score,
         comment,
         reviewerId: actor.id,
         sessionId,
@@ -225,7 +292,10 @@ export async function submitVerification(
         nextAssessmentDate,
         dimensions: { create: dimensions },
         aiChecks: { create: aiChecks },
-        evidenceItems: { connect: evidenceIds.map((id) => ({ id })) },
+        answers: { create: answers },
+        evidenceItems: {
+          connect: [qaEvidence.id, ...evidenceIds].map((id) => ({ id })),
+        },
       },
       select: { id: true },
     });
@@ -243,9 +313,12 @@ export async function submitVerification(
 
   const note =
     finalConfidence !== confidence && confidence
-      ? ` Confidence was recorded as ${finalConfidence.toLowerCase()} rather than ${confidence.toLowerCase()}, because ${cited.length === 0 ? 'no evidence was cited' : 'the cited evidence does not support more'}.`
+      ? ` Confidence was recorded as ${finalConfidence.toLowerCase()} rather than ${confidence.toLowerCase()}, because ${cited.length === 0 ? 'only the Q&A backs this grade' : 'the cited evidence does not support more'}.`
       : '';
-  return { ok: true, message: `Verified level recorded.${note}` };
+  return {
+    ok: true,
+    message: `Scored ${score}% — grade ${LEVEL_DEF[level].code} (${LEVEL_DEF[level].name}) recorded.${note}`,
+  };
 }
 
 /* ---------------------------------------------------------------- evidence */
@@ -321,7 +394,7 @@ export async function setTargetLevel(
   const memberId = str(formData, 'memberId');
   const skillId = str(formData, 'skillId');
   const level = num(formData, 'targetLevel');
-  if (!isLevel(level)) return { ok: false, error: 'Pick a level between L0 and L4.' };
+  if (!isLevel(level)) return { ok: false, error: 'Pick a grade between E and A.' };
 
   const skill = await prisma.skill.findUnique({ where: { id: skillId }, select: { ownerId: true } });
   const allowed = actor.role === 'ADMIN' || actor.id === memberId || skill?.ownerId === actor.id;
@@ -576,7 +649,7 @@ export async function createMember(
       title: str(formData, 'title') || null,
       role: str(formData, 'role') === 'ADMIN' ? 'ADMIN' : 'MEMBER',
       // Everyone tracks every skill: the programme is about breadth, so a new
-      // member starts with a row (and an L2 target) in each one.
+      // member starts with a row (and a C target) in each one.
       memberSkills: {
         create: skills.map((s) => ({
           skillId: s.id,
@@ -698,6 +771,74 @@ export async function deleteChecklistItem(formData: FormData): Promise<void> {
   refreshAll();
 }
 
+
+/* ------------------------------------------------------------ question bank */
+
+async function assertCanEditQuestions(skillId: string) {
+  const actor = await requireActingUser();
+  const skill = await prisma.skill.findUnique({ where: { id: skillId }, select: { ownerId: true } });
+  if (!skill) return { ok: false as const, error: 'Unknown skill.' };
+  if (actor.role !== 'ADMIN' && skill.ownerId !== actor.id) {
+    return { ok: false as const, error: 'Only the skill owner or an admin can edit the Q&A.' };
+  }
+  return { ok: true as const };
+}
+
+export async function addQuestion(
+  _prev: ActionResult | null,
+  formData: FormData,
+): Promise<ActionResult> {
+  const skillId = str(formData, 'skillId');
+  const allowed = await assertCanEditQuestions(skillId);
+  if (!allowed.ok) return allowed;
+
+  const prompt = str(formData, 'prompt');
+  if (!prompt) return { ok: false, error: 'Enter the question.' };
+  const difficulty = str(formData, 'difficulty');
+  if (!DIFFICULTIES.includes(difficulty as never)) {
+    return { ok: false, error: 'Pick a difficulty.' };
+  }
+
+  const last = await prisma.question.findFirst({
+    where: { skillId },
+    orderBy: { order: 'desc' },
+    select: { order: true },
+  });
+  await prisma.question.create({
+    data: {
+      skillId,
+      prompt,
+      difficulty,
+      topic: str(formData, 'topic') || 'General',
+      expectedAnswer: str(formData, 'expectedAnswer'),
+      order: (last?.order ?? -1) + 1,
+    },
+  });
+  refreshAll();
+  return { ok: true, message: 'Question added.' };
+}
+
+/**
+ * A question that has already been scored is archived rather than deleted, so
+ * past assessments keep a link to it. Their copied prompt and weight keep the
+ * score reproducible either way.
+ */
+export async function removeQuestion(formData: FormData): Promise<void> {
+  const id = str(formData, 'id');
+  const q = await prisma.question.findUnique({
+    where: { id },
+    select: { skillId: true, _count: { select: { answers: true } } },
+  });
+  if (!q) return;
+  const allowed = await assertCanEditQuestions(q.skillId);
+  if (!allowed.ok) return;
+  if (q._count.answers > 0) {
+    await prisma.question.update({ where: { id }, data: { archived: true } });
+  } else {
+    await prisma.question.delete({ where: { id } });
+  }
+  refreshAll();
+}
 
 /* --------------------------------------------------------------- skill docs */
 

@@ -1,12 +1,21 @@
 import { PrismaClient } from '@prisma/client';
 import { SKILL_DOCS } from './seed-docs';
+import { SKILL_QUESTIONS } from './seed-questions';
+import {
+  difficultyWeight,
+  levelForScore,
+  qaScore,
+  suggestedConfidence,
+  type EvidenceType,
+} from '../src/lib/domain';
 
 const prisma = new PrismaClient();
 
 type ItemSeed = [topic: string, requiredLevel: number, description: string];
 type GroupSeed = { group: string; items: ItemSeed[] };
 
-const CHECKLISTS: Record<string, GroupSeed[]> = {
+// Checklists per original area; merged into the three skills below.
+const AREA_CHECKLISTS: Record<string, GroupSeed[]> = {
   database: [
     {
       group: 'Database Fundamentals',
@@ -160,38 +169,97 @@ const CHECKLISTS: Record<string, GroupSeed[]> = {
   ],
 };
 
+/** Prefix a group with its area unless it already names it ("SQL" → "Database: SQL"). */
+function inArea(area: string, groups: GroupSeed[]): GroupSeed[] {
+  return groups.map((g) => ({
+    ...g,
+    group: g.group.startsWith(area) ? g.group : `${area}: ${g.group}`,
+  }));
+}
+
+const CHECKLISTS: Record<string, GroupSeed[]> = {
+  backend: [
+    ...inArea('Database', AREA_CHECKLISTS.database),
+    ...inArea('API', AREA_CHECKLISTS.backend),
+  ],
+  web: AREA_CHECKLISTS.web,
+  mobile: [...inArea('iOS', AREA_CHECKLISTS.ios), ...inArea('Android', AREA_CHECKLISTS.android)],
+};
+
+const DOCS: Record<string, (typeof SKILL_DOCS)[string]> = {
+  backend: [...SKILL_DOCS.database, ...SKILL_DOCS.backend],
+  web: SKILL_DOCS.web,
+  mobile: [...SKILL_DOCS.ios, ...SKILL_DOCS.android],
+};
+
 const SKILLS = [
-  { key: 'database', name: 'Database', description: 'Relational data modelling, SQL, indexes, transactions, migration and recovery.' },
-  { key: 'backend', name: 'Backend', description: 'Server-side services: API and resource design, auth, validation, errors, versioning and operations.' },
-  { key: 'web', name: 'Web', description: 'Browser applications: markup, layout, state, API integration, accessibility and performance.' },
-  { key: 'ios', name: 'iOS', description: 'Native iOS development in Swift and SwiftUI, from app lifecycle to App Store release.' },
-  { key: 'android', name: 'Android', description: 'Native Android development in Kotlin and Compose, from lifecycle to Play Store release.' },
+  { key: 'backend', name: 'Backend', owner: 'dev.b@example.com', description: 'Database and API: data modelling, SQL, indexes and transactions, plus API design, auth, validation, errors, versioning and operations.' },
+  { key: 'web', name: 'Web', owner: 'dev.c@example.com', description: 'Frontend for the browser: markup, layout, state, API integration, accessibility and performance.' },
+  { key: 'mobile', name: 'Mobile', owner: 'dev.d@example.com', description: 'Frontend for mobile: native iOS (Swift, SwiftUI) and Android (Kotlin, Compose), from app lifecycle to store release.' },
 ];
 
 const MEMBERS = [
-  { name: 'Developer A', email: 'dev.a@example.com', title: 'Backend Engineer', role: 'ADMIN', primary: 'database' },
+  { name: 'Developer A', email: 'dev.a@example.com', title: 'Backend Engineer', role: 'ADMIN', primary: 'backend' },
   { name: 'Developer B', email: 'dev.b@example.com', title: 'Backend Engineer', role: 'MEMBER', primary: 'backend' },
   { name: 'Developer C', email: 'dev.c@example.com', title: 'Frontend Engineer', role: 'MEMBER', primary: 'web' },
-  { name: 'Developer D', email: 'dev.d@example.com', title: 'Mobile Engineer', role: 'MEMBER', primary: 'ios' },
-  { name: 'Developer E', email: 'dev.e@example.com', title: 'Mobile Engineer', role: 'MEMBER', primary: 'android' },
+  { name: 'Developer D', email: 'dev.d@example.com', title: 'Mobile Engineer (iOS)', role: 'MEMBER', primary: 'mobile' },
+  { name: 'Developer E', email: 'dev.e@example.com', title: 'Mobile Engineer (Android)', role: 'MEMBER', primary: 'mobile' },
 ];
 
-// Verified levels from the spec's example matrix (§6).
+// Target grades (0 = E … 4 = A). The recorded grade comes from the seeded Q&A
+// score, which is aimed at the middle of each band.
 const MATRIX: Record<string, Record<string, number>> = {
-  'dev.a@example.com': { database: 4, backend: 2, web: 2, ios: 1, android: 1 },
-  'dev.b@example.com': { database: 2, backend: 4, web: 2, ios: 1, android: 1 },
-  'dev.c@example.com': { database: 2, backend: 2, web: 4, ios: 1, android: 1 },
-  'dev.d@example.com': { database: 1, backend: 2, web: 1, ios: 4, android: 2 },
-  'dev.e@example.com': { database: 1, backend: 2, web: 1, ios: 2, android: 4 },
+  'dev.a@example.com': { backend: 4, web: 2, mobile: 0 },
+  'dev.b@example.com': { backend: 4, web: 2, mobile: 1 },
+  'dev.c@example.com': { backend: 2, web: 4, mobile: 0 },
+  'dev.d@example.com': { backend: 1, web: 2, mobile: 4 },
+  'dev.e@example.com': { backend: 2, web: 1, mobile: 3 },
 };
 
 // Self-assessments that differ from verified, to exercise the §8 separation.
 const SELF: Record<string, Record<string, number>> = {
-  'dev.a@example.com': { backend: 3 },
-  'dev.c@example.com': { database: 3 },
-  'dev.d@example.com': { android: 3 },
-  'dev.e@example.com': { backend: 3 },
+  'dev.a@example.com': { web: 3 },
+  'dev.c@example.com': { backend: 3 },
+  'dev.d@example.com': { web: 3 },
+  'dev.e@example.com': { backend: 3, mobile: 4 },
 };
+
+const BAND_TARGET = [55, 65, 75, 85, 95];
+
+/**
+ * Plausible Q&A results that land a score near the middle of the target
+ * grade's band: the basics go right first, the advanced questions last.
+ */
+function answersFor(
+  questions: { id: string; topic: string; prompt: string; difficulty: string }[],
+  level: number,
+) {
+  const sorted = [...questions].sort(
+    (a, b) => difficultyWeight(a.difficulty) - difficultyWeight(b.difficulty),
+  );
+  const total = sorted.reduce((sum, q) => sum + difficultyWeight(q.difficulty), 0);
+  let need = (BAND_TARGET[level] / 100) * total;
+  return sorted.map((q) => {
+    const weight = difficultyWeight(q.difficulty);
+    let result: 'CORRECT' | 'PARTIAL' | 'WRONG' = 'WRONG';
+    if (need >= weight) {
+      result = 'CORRECT';
+      need -= weight;
+    } else if (need >= weight / 2) {
+      result = 'PARTIAL';
+      need -= weight / 2;
+    }
+    return {
+      questionId: q.id,
+      topic: q.topic,
+      prompt: q.prompt,
+      difficulty: q.difficulty,
+      weight,
+      result,
+      note: '',
+    };
+  });
+}
 
 function daysAgo(n: number): Date {
   const d = new Date();
@@ -281,13 +349,7 @@ function evidenceFor(
       { type: 'DEBUGGING_TASK', summary: `Diagnosed a production ${name} incident`, daysAgo: 50 },
     ];
   }
-  const base: { type: string; summary: string; detail?: string; daysAgo: number }[] = [
-    {
-      type: 'KNOWLEDGE_QUESTIONS',
-      summary: `Answered ${name} concept questions after the sharing session`,
-      daysAgo: 42,
-    },
-  ];
+  const base: { type: string; summary: string; detail?: string; daysAgo: number }[] = [];
   if (level >= 2) {
     base.push({
       type: 'PRACTICAL_TASK',
@@ -307,22 +369,18 @@ function evidenceFor(
 
 function weakAreasFor(key: string): string {
   const map: Record<string, string> = {
-    database: 'Indexes and transaction isolation.',
-    backend: 'Authorization edge cases and error shape consistency.',
+    backend: 'Indexes, transaction isolation and authorization edge cases.',
     web: 'State management and accessibility.',
-    ios: 'Concurrency and local persistence.',
-    android: 'Coroutines, Flow and configuration-change handling.',
+    mobile: 'Concurrency, local persistence and configuration-change handling.',
   };
   return map[key] ?? 'Needs broader hands-on practice.';
 }
 
 function recommendedFor(key: string): string {
   const map: Record<string, string> = {
-    database: 'Read a query plan for a slow report, then add and measure an index.',
-    backend: 'Implement an endpoint with ownership checks and a consistent error shape.',
+    backend: 'Read a query plan for a slow report and add an index; then implement an endpoint with ownership checks.',
     web: 'Rebuild one screen with hoisted state, then run a keyboard-only pass.',
-    ios: 'Move one screen to async/await and add a persistence layer.',
-    android: 'Convert one screen to a StateFlow-driven ViewModel.',
+    mobile: 'Move one screen to async/await (iOS) or a StateFlow-driven ViewModel (Android).',
   };
   return map[key] ?? 'Pick a small task in this area and present the result.';
 }
@@ -337,6 +395,7 @@ async function main() {
   await prisma.learningAssignment.deleteMany();
   await prisma.checklistProgress.deleteMany();
   await prisma.skillDoc.deleteMany();
+  await prisma.question.deleteMany();
   await prisma.checklistItem.deleteMany();
   await prisma.memberSkill.deleteMany();
   await prisma.skill.deleteMany();
@@ -354,14 +413,23 @@ async function main() {
   console.log('Creating skills and checklists…');
   const skills: Record<string, { id: string; name: string }> = {};
   for (const [i, s] of SKILLS.entries()) {
-    const ownerEmail = MEMBERS.find((m) => m.primary === s.key)!.email;
+    const { owner: ownerEmail, ...fields } = s;
     const created = await prisma.skill.create({
-      data: { ...s, order: i, ownerId: members[ownerEmail].id },
+      data: { ...fields, order: i, ownerId: members[ownerEmail].id },
     });
     skills[s.key] = created;
 
+    // Preparation Q&A: the questions the owner scores in a review.
+    for (const [q, [topic, difficulty, prompt, expectedAnswer]] of (
+      SKILL_QUESTIONS[s.key] ?? []
+    ).entries()) {
+      await prisma.question.create({
+        data: { skillId: created.id, topic, difficulty, prompt, expectedAnswer, order: q },
+      });
+    }
+
     // Starter guides: the concepts and standards the owner maintains.
-    const docs = SKILL_DOCS[s.key] ?? [];
+    const docs = DOCS[s.key] ?? [];
     for (const [d, doc] of docs.entries()) {
       await prisma.skillDoc.create({
         data: {
@@ -388,14 +456,25 @@ async function main() {
   }
 
   console.log('Creating member skills and assessment history…');
+  const questionsBySkill: Record<string, { id: string; topic: string; prompt: string; difficulty: string }[]> = {};
+  for (const s of SKILLS) {
+    questionsBySkill[s.key] = await prisma.question.findMany({
+      where: { skillId: skills[s.key].id },
+      orderBy: { order: 'asc' },
+      select: { id: true, topic: true, prompt: true, difficulty: true },
+    });
+  }
+
   for (const m of MEMBERS) {
     const memberId = members[m.email].id;
     for (const s of SKILLS) {
       const skillId = skills[s.key].id;
       const isPrimary = m.primary === s.key;
-      const verified = MATRIX[m.email][s.key];
+      const answers = answersFor(questionsBySkill[s.key], MATRIX[m.email][s.key]);
+      const score = qaScore(answers)!;
+      const verified = levelForScore(score);
       const self = SELF[m.email]?.[s.key] ?? verified;
-      // Everyone targets L2 in every non-primary skill: "capable of contributing
+      // Everyone targets C in every non-primary skill: "capable of contributing
       // outside their primary specialization".
       const targetLevel = isPrimary ? 4 : Math.max(2, verified);
 
@@ -447,16 +526,35 @@ async function main() {
           ),
         );
 
+        // The Q&A goes on file as evidence, like it does in the app.
+        const asked = answers.length;
+        created.push(
+          await prisma.evidence.create({
+            data: {
+              memberId,
+              skillId,
+              type: 'KNOWLEDGE_QUESTIONS',
+              summary: `Q&A: scored ${score}% on ${asked} ${s.name} questions`,
+              occurredAt: daysAgo(35),
+              recordedById: reviewerId,
+            },
+            select: { id: true },
+          }),
+        );
+
         const assessment = await prisma.assessment.create({
           data: {
             memberId,
             skillId,
             type: 'VERIFICATION',
             level: verified,
+            score,
             reviewerId,
             method: 'OWNER_REVIEW',
-            confidence:
-              evidenceSeeds.length >= 3 ? 'HIGH' : evidenceSeeds.length === 2 ? 'MEDIUM' : 'LOW',
+            confidence: suggestedConfidence(
+              ['KNOWLEDGE_QUESTIONS', ...evidenceSeeds.map((e) => e.type as EvidenceType)],
+              verified,
+            ),
             comment:
               self > verified
                 ? 'Good grasp of the concepts, and explains the happy path well. Could not yet talk through the failure modes without help.'
@@ -467,6 +565,7 @@ async function main() {
             createdAt: daysAgo(35),
             dimensions: { create: dimensionsFor(verified, isPrimary) },
             aiChecks: { create: aiChecksFor(verified) },
+            answers: { create: answers },
             evidenceItems: { connect: created.map((c) => ({ id: c.id })) },
           },
           select: { id: true },
@@ -483,15 +582,15 @@ async function main() {
 
   await prisma.learningAssignment.createMany({
     data: [
-      { memberId: devC, skillId: skills.database.id, targetLevel: 2, dueDate: daysFromNow(14), note: 'Work through the SQL block, then present what you learned.' },
-      { memberId: devD, skillId: skills.database.id, targetLevel: 2, dueDate: daysFromNow(14), note: 'Focus on tables, keys and relationships first.' },
-      { memberId: devE, skillId: skills.database.id, targetLevel: 2, dueDate: daysFromNow(21), note: '' },
+      { memberId: devC, skillId: skills.backend.id, targetLevel: 2, dueDate: daysFromNow(14), note: 'Work through the SQL block, then present what you learned.' },
+      { memberId: devD, skillId: skills.backend.id, targetLevel: 2, dueDate: daysFromNow(14), note: 'Focus on tables, keys and relationships first.' },
+      { memberId: devE, skillId: skills.backend.id, targetLevel: 2, dueDate: daysFromNow(21), note: '' },
     ],
   });
 
-  // Developer C: 6 of 15 database checklist items done, matching the spec example.
+  // Developer C: 6 of the 15 database items in the Backend checklist done.
   const dbItems = await prisma.checklistItem.findMany({
-    where: { skillId: skills.database.id },
+    where: { skillId: skills.backend.id },
     orderBy: { order: 'asc' },
   });
   const cStatuses = [
@@ -514,11 +613,11 @@ async function main() {
 
   await prisma.learningNote.createMany({
     data: [
-      { memberId: devC, skillId: skills.database.id, kind: 'NOTE', title: 'Primary key vs unique constraint', body: 'A table has one primary key; unique constraints can be many and allow a NULL depending on the engine.' },
-      { memberId: devC, skillId: skills.database.id, kind: 'CODE', title: 'LEFT JOIN that keeps orphan rows', body: 'SELECT c.id, o.total\nFROM customer c\nLEFT JOIN "order" o ON o.customer_id = c.id\nWHERE o.id IS NULL;' },
-      { memberId: devC, skillId: skills.database.id, kind: 'LINK', title: 'Use The Index, Luke', body: 'Recommended by the database owner.', url: 'https://use-the-index-luke.com' },
-      { memberId: devC, skillId: skills.database.id, kind: 'QUESTION', title: 'When is a composite index worse than two single ones?', body: 'Ask in the next review session.' },
-      { memberId: devD, skillId: skills.database.id, kind: 'NOTE', title: 'Foreign key cascade', body: 'ON DELETE CASCADE removes children automatically — convenient, but easy to lose data with.' },
+      { memberId: devC, skillId: skills.backend.id, kind: 'NOTE', title: 'Primary key vs unique constraint', body: 'A table has one primary key; unique constraints can be many and allow a NULL depending on the engine.' },
+      { memberId: devC, skillId: skills.backend.id, kind: 'CODE', title: 'LEFT JOIN that keeps orphan rows', body: 'SELECT c.id, o.total\nFROM customer c\nLEFT JOIN "order" o ON o.customer_id = c.id\nWHERE o.id IS NULL;' },
+      { memberId: devC, skillId: skills.backend.id, kind: 'LINK', title: 'Use The Index, Luke', body: 'Recommended by the database owner.', url: 'https://use-the-index-luke.com' },
+      { memberId: devC, skillId: skills.backend.id, kind: 'QUESTION', title: 'When is a composite index worse than two single ones?', body: 'Ask in the next review session.' },
+      { memberId: devD, skillId: skills.backend.id, kind: 'NOTE', title: 'Foreign key cascade', body: 'ON DELETE CASCADE removes children automatically — convenient, but easy to lose data with.' },
     ],
   });
 
@@ -528,7 +627,7 @@ async function main() {
   const conceptSession = await prisma.session.create({
     data: {
       title: 'Database Fundamentals',
-      skillId: skills.database.id,
+      skillId: skills.backend.id,
       topic: 'Database Fundamentals',
       type: 'CONCEPT_SHARING',
       presenterId: members['dev.a@example.com'].id,
@@ -551,7 +650,7 @@ async function main() {
   await prisma.session.create({
     data: {
       title: 'What I Learned About Database',
-      skillId: skills.database.id,
+      skillId: skills.backend.id,
       topic: 'SQL and relationships',
       type: 'MEMBER_SHARING',
       presenterId: devC,
@@ -584,15 +683,15 @@ async function main() {
 
   await prisma.session.create({
     data: {
-      title: 'Database L2 review — Developer D',
-      skillId: skills.database.id,
+      title: 'Backend C review — Developer D',
+      skillId: skills.backend.id,
       topic: 'Tables, keys, relationships',
       type: 'REVIEW_ASSESSMENT',
       presenterId: members['dev.a@example.com'].id,
       date: daysFromNow(9),
       duration: 30,
       location: 'Meeting Room 2',
-      description: 'Checklist walkthrough and questions, then record a verified level.',
+      description: 'Checklist walkthrough and the Backend Q&A, then record a verified grade.',
       status: 'PLANNED',
       participants: { create: [{ memberId: devD }, { memberId: members['dev.a@example.com'].id }] },
     },
@@ -601,7 +700,7 @@ async function main() {
   await prisma.session.create({
     data: {
       title: 'Compose state and recomposition',
-      skillId: skills.android.id,
+      skillId: skills.mobile.id,
       topic: 'Jetpack Compose',
       type: 'CONCEPT_SHARING',
       presenterId: devE,
@@ -616,7 +715,7 @@ async function main() {
 
   // Tie one historical verification to the concept session it came out of.
   await prisma.assessment.updateMany({
-    where: { skillId: skills.database.id, type: 'VERIFICATION', memberId: devC },
+    where: { skillId: skills.backend.id, type: 'VERIFICATION', memberId: devC },
     data: { sessionId: conceptSession.id },
   });
 
@@ -625,6 +724,8 @@ async function main() {
     skills: await prisma.skill.count(),
     checklistItems: await prisma.checklistItem.count(),
     guides: await prisma.skillDoc.count(),
+    questions: await prisma.question.count(),
+    answers: await prisma.questionAnswer.count(),
     assessments: await prisma.assessment.count(),
     dimensionScores: await prisma.dimensionScore.count(),
     evidence: await prisma.evidence.count(),

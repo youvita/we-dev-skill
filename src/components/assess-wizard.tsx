@@ -6,6 +6,8 @@ import {
   AI_CRITERION_LABEL,
   AI_RATINGS,
   AI_RATING_LABEL,
+  ANSWER_RESULTS,
+  ANSWER_RESULT_DEF,
   ASSESSMENT_METHODS,
   ASSESSMENT_METHOD_LABEL,
   CONFIDENCE_HINT,
@@ -13,15 +15,22 @@ import {
   CONFIDENCE_LEVELS,
   DIMENSIONS,
   DIMENSION_DEF,
+  DIFFICULTY_DEF,
   EVIDENCE_TYPE_LABEL,
   LEVELS,
   LEVEL_DEF,
+  MIN_QUESTIONS_ASKED,
+  difficultyWeight,
   evidenceWarnings,
   independenceLabel,
   independenceScore,
   levelCode,
+  levelForScore,
+  qaScore,
   suggestedConfidence,
   type AiRating,
+  type AnswerResult,
+  type Difficulty,
   type Dimension,
   type EvidenceType,
   type Level,
@@ -29,7 +38,16 @@ import {
 import { submitVerification } from '@/lib/actions';
 import { Feedback, SubmitButton } from '@/components/forms';
 import { LevelBadge } from '@/components/ui';
+import { Markdown } from '@/components/markdown';
 import { useActionState } from 'react';
+
+export type QuestionOption = {
+  id: string;
+  topic: string;
+  prompt: string;
+  expectedAnswer: string;
+  difficulty: string;
+};
 
 export type EvidenceOption = {
   id: string;
@@ -40,15 +58,22 @@ export type EvidenceOption = {
 };
 
 const STEPS = [
-  { key: 'level', label: 'Level', blurb: 'Where does the overall level land?' },
+  { key: 'qa', label: 'Q&A', blurb: 'Ask the prepared questions and mark each answer. The score sets the grade.' },
   { key: 'dimensions', label: 'Dimensions', blurb: 'Score only what you observed.' },
   { key: 'evidence', label: 'Evidence', blurb: 'What backs this level?' },
   { key: 'ai', label: 'Independence', blurb: 'How much do they control the solution?' },
   { key: 'record', label: 'Record', blurb: 'Notes, next steps and confidence.' },
 ] as const;
 
+const RESULT_STYLE: Record<AnswerResult, string> = {
+  NOT_ASKED: 'border-line bg-surface text-muted',
+  CORRECT: 'border-emerald-300 bg-emerald-50 text-emerald-800',
+  PARTIAL: 'border-amber-300 bg-amber-50 text-amber-800',
+  WRONG: 'border-rose-300 bg-rose-50 text-rose-700',
+};
+
 /**
- * The assessment is long by nature — spec 2 asks for a level, six dimensions,
+ * The assessment is long by nature — a Q&A that sets the grade, six dimensions,
  * evidence, five AI-dependency checks and a written record. Splitting it into
  * steps keeps each screen answerable, while every input stays mounted so a
  * single submit carries the whole form.
@@ -61,6 +86,7 @@ export function AssessWizard({
   currentVerified,
   selfLevel,
   selfDimensions = [],
+  questions,
   evidence,
   sessions = [],
   sessionId,
@@ -73,6 +99,7 @@ export function AssessWizard({
   currentVerified: number | null;
   selfLevel: number | null;
   selfDimensions?: { dimension: string; level: number }[];
+  questions: QuestionOption[];
   evidence: EvidenceOption[];
   sessions?: { id: string; title: string; date: string }[];
   sessionId?: string;
@@ -88,7 +115,7 @@ export function AssessWizard({
     setStep(next);
     topRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }, []);
-  const [level, setLevel] = useState<number>(currentVerified ?? selfLevel ?? 0);
+  const [results, setResults] = useState<Record<string, AnswerResult>>({});
   const [dims, setDims] = useState<Record<string, string>>({});
   const [checked, setChecked] = useState<string[]>([]);
   const [confidence, setConfidence] = useState('');
@@ -99,14 +126,31 @@ export function AssessWizard({
   const firstName = memberName.split(' ')[0];
   const selfByDim = new Map(selfDimensions.map((d) => [d.dimension, d.level]));
 
+  const asked = questions.filter((q) => (results[q.id] ?? 'NOT_ASKED') !== 'NOT_ASKED');
+  const score = qaScore(
+    asked.map((q) => ({ weight: difficultyWeight(q.difficulty), result: results[q.id] })),
+  );
+  const enoughAsked = asked.length >= MIN_QUESTIONS_ASKED;
+  const level = score === null ? null : levelForScore(score);
+  const topics = useMemo(() => {
+    const map = new Map<string, QuestionOption[]>();
+    for (const q of questions) map.set(q.topic, [...(map.get(q.topic) ?? []), q]);
+    return [...map.entries()];
+  }, [questions]);
+
+  // The Q&A is recorded as evidence on submit, so it counts here too.
   const citedTypes = useMemo(
-    () =>
-      checked.map((id) => evidence.find((e) => e.id === id)?.type).filter(Boolean) as EvidenceType[],
+    () => [
+      'KNOWLEDGE_QUESTIONS' as EvidenceType,
+      ...(checked
+        .map((id) => evidence.find((e) => e.id === id)?.type)
+        .filter(Boolean) as EvidenceType[]),
+    ],
     [checked, evidence],
   );
 
-  const warnings = evidenceWarnings(citedTypes, level);
-  const supported = suggestedConfidence(citedTypes, level);
+  const warnings = evidenceWarnings(citedTypes, level ?? 0);
+  const supported = suggestedConfidence(citedTypes, level ?? 0);
   const independence = independenceScore(AI_CRITERIA.map((c) => ai[c]));
   const scoredDims = DIMENSIONS.filter((d) => dims[d] !== undefined && dims[d] !== '').length;
   const aiAssessed = AI_CRITERIA.filter((c) => ai[c] !== 'NOT_ASSESSED').length;
@@ -115,9 +159,9 @@ export function AssessWizard({
   const capped = confidence !== '' && order[confidence as keyof typeof order] > order[supported];
 
   const done: Record<string, string | null> = {
-    level: levelCode(level),
+    qa: score === null ? null : `${score}% · ${levelCode(level)}`,
     dimensions: scoredDims > 0 ? `${scoredDims}/6` : null,
-    evidence: checked.length > 0 ? `${checked.length} cited` : null,
+    evidence: checked.length > 0 ? `+${checked.length}` : null,
     ai: aiAssessed > 0 ? `${Math.round((independence ?? 0) * 100)}%` : null,
     record: null,
   };
@@ -182,35 +226,116 @@ export function AssessWizard({
       <div className="px-5 py-5">
         <p className="mb-4 text-sm text-muted">{STEPS[step].blurb}</p>
 
-        {/* ------------------------------------------------------ 1. level */}
+        {/* -------------------------------------------------------- 1. Q&A */}
         <section hidden={step !== 0} className="space-y-4">
           <div className="note note-warn">
-            Assess understanding, not output. A developer who shipped the feature with AI has not,
-            by that fact, demonstrated the skill — check that {firstName} can explain the solution,
-            read the code, debug it and justify the decisions.
+            Assess understanding, not recall. Ask {firstName} to explain in their own words, and
+            mark an answer Partial when it is right but they cannot say why.
           </div>
-          <div className="grid gap-2 sm:grid-cols-2">
-            {LEVELS.map((l) => (
-              <label key={l} className={`choice ${level === l ? 'choice-on' : ''}`}>
-                <input
-                  type="radio"
-                  name="level"
-                  value={l}
-                  checked={level === l}
-                  onChange={() => setLevel(l)}
-                  className="mt-1"
-                />
-                <span className="text-xs">
-                  <strong className="block text-sm text-ink">
-                    {LEVEL_DEF[l as Level].code} · {LEVEL_DEF[l as Level].name}
-                  </strong>
-                  <span className="mt-0.5 block leading-relaxed text-muted">
-                    {LEVEL_DEF[l as Level].summary}
-                  </span>
+
+          {questions.length === 0 ? (
+            <div className="note note-bad">
+              {skillName} has no Q&amp;A questions yet. Add some on the skill&rsquo;s Q&amp;A tab
+              first — the grade is worked out from them.
+            </div>
+          ) : (
+            topics.map(([topic, qs]) => (
+              <div key={topic} className="overflow-hidden rounded-lg border border-line">
+                <h3 className="bg-wash px-3.5 py-2 text-2xs font-semibold uppercase tracking-[0.06em] text-muted">
+                  {topic}
+                </h3>
+                <ol className="divide-rows">
+                  {qs.map((q) => {
+                    const r = results[q.id] ?? 'NOT_ASKED';
+                    const d = DIFFICULTY_DEF[q.difficulty as Difficulty];
+                    return (
+                      <li key={q.id} className="space-y-2 px-3.5 py-3">
+                        <div className="flex flex-wrap items-start gap-2">
+                          <p className="min-w-0 flex-1 text-sm font-medium text-ink">{q.prompt}</p>
+                          <span
+                            className="chip chip-plain"
+                            title={`Worth ${d?.weight ?? 1} point${d?.weight === 1 ? '' : 's'}`}
+                          >
+                            {d?.label ?? q.difficulty} · {d?.weight ?? 1}pt
+                          </span>
+                        </div>
+                        {q.expectedAnswer && (
+                          <details className="rounded-md bg-wash px-3 py-2 text-xs">
+                            <summary className="cursor-pointer font-medium text-muted">
+                              Expected answer
+                            </summary>
+                            <div className="mt-2">
+                              <Markdown>{q.expectedAnswer}</Markdown>
+                            </div>
+                          </details>
+                        )}
+                        <fieldset className="flex flex-wrap gap-1.5">
+                          <legend className="sr-only">Result for: {q.prompt}</legend>
+                          {ANSWER_RESULTS.map((res) => (
+                            <label
+                              key={res}
+                              className={`cursor-pointer rounded-md border px-2.5 py-1 text-xs font-medium transition ${
+                                r === res ? RESULT_STYLE[res] : 'border-line text-muted hover:border-muted'
+                              }`}
+                            >
+                              <input
+                                type="radio"
+                                name={`q_${q.id}`}
+                                value={res}
+                                checked={r === res}
+                                onChange={() => setResults((p) => ({ ...p, [q.id]: res }))}
+                                className="sr-only"
+                              />
+                              {ANSWER_RESULT_DEF[res].label}
+                            </label>
+                          ))}
+                        </fieldset>
+                        {r !== 'NOT_ASKED' && (
+                          <input
+                            name={`qnote_${q.id}`}
+                            className="field py-1.5 text-xs"
+                            placeholder="Note on the answer (optional)"
+                          />
+                        )}
+                      </li>
+                    );
+                  })}
+                </ol>
+              </div>
+            ))
+          )}
+
+          {/* Live score, kept in view while scrolling through the questions. */}
+          <div className="sticky bottom-0 -mx-5 border-t border-line bg-surface/95 px-5 py-3 backdrop-blur">
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
+              <span className="text-muted">
+                Asked <strong className="text-ink">{asked.length}</strong> of {questions.length}
+              </span>
+              <span className="text-muted">
+                Score{' '}
+                <strong className="text-base tabular-nums text-ink">
+                  {score === null ? '—' : `${score}%`}
+                </strong>
+              </span>
+              <span className="flex items-center gap-1.5 text-muted">
+                Grade <LevelBadge level={level} withName />
+              </span>
+              {!enoughAsked && (
+                <span className="text-amber-700">
+                  Score at least {MIN_QUESTIONS_ASKED} questions to record a grade.
                 </span>
-              </label>
-            ))}
+              )}
+            </div>
+            <p className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-2xs text-faint">
+              {[...LEVELS].reverse().map((l) => (
+                <span key={l}>
+                  {LEVEL_DEF[l].code} {LEVEL_DEF[l].band}
+                </span>
+              ))}
+              <span>· Basic 1pt, Intermediate 2pt, Advanced 3pt</span>
+            </p>
           </div>
+
           <p className="flex flex-wrap items-center gap-2 text-xs text-muted">
             Currently verified <LevelBadge level={currentVerified} /> · they self-assessed{' '}
             <LevelBadge level={selfLevel} />
@@ -266,8 +391,9 @@ export function AssessWizard({
         <section hidden={step !== 2} className="space-y-3">
           {evidence.length === 0 ? (
             <div className="note note-warn">
-              No evidence is on file for {memberName} in {skillName}. A level should be supported by
-              evidence — record some on their workspace first.
+              No other evidence is on file for {memberName} in {skillName}. The Q&amp;A is recorded
+              as evidence automatically; add a practical task or code review on their workspace to
+              back the grade further.
             </div>
           ) : (
             <div className="space-y-1.5">
@@ -312,9 +438,9 @@ export function AssessWizard({
               {w}
             </p>
           ))}
-          {warnings.length === 0 && checked.length > 0 && (
+          {warnings.length === 0 && (
             <p className="note note-ok">
-              {checked.length} item{checked.length === 1 ? '' : 's'} cited across{' '}
+              The Q&amp;A plus {checked.length} item{checked.length === 1 ? '' : 's'}, across{' '}
               {new Set(citedTypes).size} form{new Set(citedTypes).size === 1 ? '' : 's'} of evidence.
             </p>
           )}
@@ -475,8 +601,9 @@ export function AssessWizard({
           {/* A last look at everything before it becomes a permanent record. */}
           <dl className="grid gap-x-6 gap-y-2 rounded-lg bg-wash px-4 py-3 text-xs sm:grid-cols-2">
             <div className="flex items-center gap-2">
-              <dt className="text-muted">Level</dt>
-              <dd>
+              <dt className="text-muted">Q&amp;A</dt>
+              <dd className="flex items-center gap-2 font-medium text-ink">
+                {score === null ? 'not scored' : `${score}% on ${asked.length} questions`}
                 <LevelBadge level={level} withName />
               </dd>
             </div>
@@ -485,10 +612,10 @@ export function AssessWizard({
               <dd className="font-medium text-ink">{scoredDims} of 6</dd>
             </div>
             <div className="flex items-center gap-2">
-              <dt className="text-muted">Evidence cited</dt>
+              <dt className="text-muted">Other evidence cited</dt>
               <dd className="font-medium text-ink">
                 {checked.length} ({new Set(citedTypes).size} form
-                {new Set(citedTypes).size === 1 ? '' : 's'})
+                {new Set(citedTypes).size === 1 ? '' : 's'} with the Q&amp;A)
               </dd>
             </div>
             <div className="flex items-center gap-2">
@@ -531,7 +658,9 @@ export function AssessWizard({
             Next
           </button>
         ) : (
-          <SubmitButton pendingLabel="Recording…">Record {levelCode(level)}</SubmitButton>
+          <SubmitButton pendingLabel="Recording…" disabled={!enoughAsked}>
+            {enoughAsked ? `Record ${levelCode(level)} (${score}%)` : 'Score more questions'}
+          </SubmitButton>
         )}
       </div>
     </form>

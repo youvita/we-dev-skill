@@ -31,6 +31,11 @@ export default async function AssessPage({
         ownerId: true,
         owner: { select: { id: true, name: true } },
         _count: { select: { checklistItems: true } },
+        questions: {
+          where: { archived: false },
+          orderBy: { order: 'asc' },
+          select: { id: true, topic: true, prompt: true, expectedAnswer: true, difficulty: true },
+        },
       },
     }),
   ]);
@@ -164,6 +169,7 @@ export default async function AssessPage({
             currentVerified={link.verifiedLevel}
             selfLevel={link.selfLevel}
             selfDimensions={lastSelf?.dimensions ?? []}
+            questions={skill.questions}
             evidence={options}
             sessions={sessions.map((s) => ({
               id: s.id,

@@ -101,7 +101,7 @@ self-vs-verified gap, evidence count, checklist progress and whether a
 reassessment is overdue. Overdue items sort first. Each row opens the assessment.
 
 The **assessment** (`/members/[id]/skills/[key]/assess`) is a five-step flow —
-Level → Dimensions → Evidence → Independence → Record — with a context rail
+Q&A → Dimensions → Evidence → Independence → Record — with a context rail
 showing what the member claims, the last review, and the evidence on file. Every
 input stays mounted across steps, so one submit carries the whole form.
 
@@ -139,7 +139,7 @@ the textarea stays mounted while previewing so toggling never loses work. Markdo
 renders with GFM (tables, task lists, code blocks) via `react-markdown`, with raw
 HTML disabled.
 
-The seed ships real starter guides for all five skills so the tab is not empty on
+The seed ships real starter guides for all three skills so the tab is not empty on
 arrival.
 
 ### Downloading guides as Markdown
@@ -163,7 +163,7 @@ later H1 demoted, so the headings nest correctly instead of competing.
 ## One place for the definitions
 
 `/levels` — the **Level guide** — is the single definition of every closed set the
-programme uses: the L0–L4 ladder, the six assessment dimensions, the nine evidence
+programme uses: the E–A grades and how they are scored, the six assessment dimensions, the nine evidence
 types, the AI-independence criteria, confidence, checklist statuses, session types
 and the learning cycle. Every page links there instead of repeating it.
 
@@ -191,22 +191,33 @@ self learning is explicitly marked "no session scheduled".
 The **dashboard** opens with a *Needs your attention* band: reviews waiting on you,
 overdue reassessments and active learning assignments, ahead of everything else.
 
-## Skill levels
+## Grades
 
-| Level | Name | Meaning |
-| --- | --- | --- |
-| L0 | No Evidence | Has not yet demonstrated the skill |
-| L1 | Fundamental | Understands basic concepts, simple tasks with guidance |
-| L2 | Working | Performs common tasks independently and explains them |
-| L3 | Proficient | Designs, troubleshoots, reviews code, decides independently |
-| L4 | Advanced | Complex problems, optimisation, standards, mentoring |
+Developers are graded **E to A**. The verified grade comes from a **weighted Q&A
+score**:
 
-A primary skill owner is normally L4. Levels are stored as `Int` 0–4 so they can be
-compared; the definitions live in `src/lib/domain.ts`.
+| Score | Grade | Name | Meaning |
+| --- | --- | --- | --- |
+| 90–100 | A | Advanced | Complex problems, optimisation, standards, mentoring |
+| 80–89 | B | Proficient | Designs, troubleshoots, reviews code, decides independently |
+| 70–79 | C | Working | Performs common tasks independently and explains them |
+| 60–69 | D | Fundamental | Understands basic concepts, simple tasks with guidance |
+| below 60 | E | Beginner | Knows some basics, needs close guidance |
 
-**`null` and L0 are different.** A null level has never been assessed and renders as
-`–`; L0 means someone was assessed and nothing was demonstrated. The UI shows them
-differently on purpose.
+Each skill has a **preparation Q&A** (the Q&A tab on the skill page), which members
+can study. In a review the skill owner asks the questions and marks each answer
+Correct (full points), Partial (half) or Wrong (none). Questions are weighted by
+difficulty (Basic 1, Intermediate 2, Advanced 3), and the score is points earned ÷
+points possible over the questions asked. At least 5 questions must be scored.
+The server recalculates the score, so the grade cannot be set by hand. The
+questions and results are saved with the assessment, and the Q&A is recorded as
+Knowledge questions evidence.
+
+Grades are stored as `Int` 0–4 (0 = E … 4 = A) so they can be compared. The
+bands and weights live in `src/lib/domain.ts` (`LEVEL_DEF`, `DIFFICULTY_DEF`).
+
+**`null` and E are different.** A null grade has never been assessed and renders as
+`–`. E means someone was assessed and scored below 60.
 
 ## Assessment dimensions
 
@@ -236,11 +247,11 @@ Evidence is **many-to-many** with assessments: a standing project contribution i
 still valid at the next review, so citing it again does not detach it from the
 earlier one. Evidence that any assessment cites cannot be deleted.
 
-### The single-quiz rule is enforced
+### Evidence backs the Q&A
 
-`evidenceWarnings()` in `src/lib/domain.ts` flags an assessment that rests on no
-evidence, on a single form of evidence, or only on recall/AI-based evidence, and
-warns when an L3+ claim has no debugging or practical task behind it. The warnings
+The Q&A sets the grade; other evidence decides how far it can be trusted.
+`evidenceWarnings()` in `src/lib/domain.ts` warns when the grade rests on the Q&A
+alone, and when a B or A has no debugging or practical task behind it. The warnings
 update live as the assessor ticks evidence.
 
 Confidence (Low / Medium / High) is **capped by the evidence**: if an assessor picks
@@ -308,7 +319,8 @@ There is deliberately no overall score, ranking or leaderboard.
 ```
 prisma/
   schema.prisma          data model
-  seed.ts                five skills, 66 checklist items, five members, sessions
+  seed.ts                three skills, 66 checklist items, five members, sessions
+  seed-questions.ts      the preparation Q&A for each skill
 src/
   app/
     page.tsx             dashboard
@@ -334,13 +346,11 @@ src/
 - Built from two specs: the programme/workflow spec (sections 1–12) and the
   assessment spec. The first spec's text ends part-way through §12 (Member
   Sharing), so anything after that point is not implemented.
-- The two specs name levels differently. The assessment spec's ladder wins
-  (L0 No Evidence … L4 Advanced); the rungs map 1:1 onto the first spec's.
-- The assessment spec groups skills as Database / Backend / Web / Mobile. The
-  Backend naming was adopted (the first spec called it API), but iOS and Android
-  stay separate rather than merging into one Mobile skill — they have different
-  checklists and different owners. The five seeded skills are Database, Backend,
-  Web, iOS and Android. Admins can rename or add skills in the UI.
+- Grades are E–A from the Q&A score, replacing the specs' L0–L4 ladder. The five
+  grades map 1:1 onto the old rungs (E = L0 … A = L4).
+- There are three skills: **Backend** (Database + API), **Web**, and **Mobile**
+  (iOS + Android). Each keeps its areas as checklist groups and Q&A topics.
+  Admins can rename or add skills in the UI.
 - The database is Postgres (originally SQLite, which cannot run on Vercel's
   read-only serverless filesystem). Closed sets are still `String` columns
   validated in `src/lib/domain.ts`, a holdover from SQLite having no enums.

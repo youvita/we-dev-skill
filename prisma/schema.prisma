@@ -1,7 +1,7 @@
 // Development Knowledge Sharing & Skill Management System
-// Levels are stored as Int 0..4 (L0 No Evidence .. L4 Advanced) so they can be
-// compared and aggregated; a NULL level means never assessed, which is not the
-// same as L0. The other closed sets are Strings validated in src/lib/domain.ts
+// Levels are grades E..A stored as Int 0..4 (0 = E, 4 = A) so they can be
+// compared and aggregated; a NULL level means never assessed. A verified grade
+// comes from a weighted Q&A score (see src/lib/domain.ts). The other closed sets are Strings validated in src/lib/domain.ts
 // (a holdover from SQLite, which has no enums).
 
 generator client {
@@ -38,7 +38,7 @@ model Member {
 
 model Skill {
   id          String   @id @default(cuid())
-  key         String   @unique // database, api, web, ios, android
+  key         String   @unique // backend, web, mobile
   name        String
   description String   @default("")
   ownerId     String?
@@ -55,6 +55,7 @@ model Skill {
   sessions            Session[]
   learningAssignments LearningAssignment[]
   learningNotes       LearningNote[]
+  questions           Question[]
 }
 
 /// One row of a skill's Knowledge Checklist (spec §7).
@@ -64,7 +65,7 @@ model ChecklistItem {
   group         String   @default("General") // e.g. "Database Fundamentals"
   topic         String
   description   String   @default("")
-  requiredLevel Int      @default(1) // 1..4
+  requiredLevel Int      @default(1) // 0..4 (E..A)
   order         Int      @default(0)
   createdAt     DateTime @default(now())
 
@@ -117,7 +118,8 @@ model Assessment {
   memberId   String
   skillId    String
   type       String // SELF | VERIFICATION
-  level      Int // 0..4
+  level      Int // 0..4 (E..A)
+  score      Float? // weighted Q&A score 0..100 that set the level; null for SELF
   evidence   String   @default("") // self: the member's own explanation
   comment    String   @default("") // reviewer comment
   reviewerId String? // null for SELF
@@ -137,9 +139,49 @@ model Assessment {
   session       Session?         @relation(fields: [sessionId], references: [id], onDelete: SetNull)
   dimensions    DimensionScore[]
   aiChecks      AiCheck[]
+  answers       QuestionAnswer[]
   evidenceItems Evidence[]       @relation("AssessmentEvidence")
 
   @@index([memberId, skillId, createdAt])
+}
+
+/// A prepared interview question for a skill, with the answer the reviewer
+/// scores against. Harder questions weigh more (BASIC 1, INTERMEDIATE 2,
+/// ADVANCED 3).
+model Question {
+  id             String   @id @default(cuid())
+  skillId        String
+  topic          String   @default("General") // e.g. "Database", "API", "iOS"
+  prompt         String
+  expectedAnswer String   @default("") // Markdown
+  difficulty     String   @default("BASIC") // BASIC | INTERMEDIATE | ADVANCED
+  order          Int      @default(0)
+  archived       Boolean  @default(false)
+  createdAt      DateTime @default(now())
+
+  skill   Skill            @relation(fields: [skillId], references: [id], onDelete: Cascade)
+  answers QuestionAnswer[]
+
+  @@index([skillId, order])
+}
+
+/// How a member answered one question in one assessment. The prompt and weight
+/// are copied so the score stays reproducible if the question is later edited.
+model QuestionAnswer {
+  id           String  @id @default(cuid())
+  assessmentId String
+  questionId   String?
+  topic        String
+  prompt       String
+  difficulty   String
+  weight       Int
+  result       String // CORRECT | PARTIAL | WRONG
+  note         String  @default("")
+
+  assessment Assessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  question   Question?  @relation(fields: [questionId], references: [id], onDelete: SetNull)
+
+  @@index([assessmentId])
 }
 
 /// Per-dimension score behind one assessment (spec 2, "Assessment Dimensions").
@@ -148,7 +190,7 @@ model DimensionScore {
   id           String @id @default(cuid())
   assessmentId String
   dimension    String // KNOWLEDGE | IMPLEMENTATION | CODE_UNDERSTANDING | DEBUGGING | DESIGN | COMMUNICATION
-  level        Int // 0..4
+  level        Int // 0..4 (E..A)
   note         String @default("")
 
   assessment Assessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
